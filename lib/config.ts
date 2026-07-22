@@ -1,0 +1,154 @@
+// Company-specific output configuration.
+//
+// The PDF is extracted ONCE into neutral RawLineItem[] (see lib/schema.ts).
+// A CompanyConfig then controls how those raw items become the final CSV rows.
+// Because the transform is pure and runs client-side, switching config and
+// pressing "Redo" re-generates the CSV instantly — no re-upload, no re-analysis.
+//
+// This is why different companies (which want different things from the SAME
+// kind of worksheet) no longer require editing code: pick or edit a preset.
+
+export type StylePoSource = "styleCode" | "bookingNumber" | "documentPo";
+export type GsmSource = "heading" | "metadata";
+export type ColorMode = "full" | "clean";
+export type WidthMode = "asExtracted" | "normalize";
+export type SpecialMode = "asExtracted" | "blank" | "fixed";
+
+export interface CompanyConfig {
+  /** Stable id (used as localStorage / selection key). */
+  id: string;
+  /** Human-readable company/preset name shown in the picker. */
+  name: string;
+
+  // ── Column set ──────────────────────────────────────────────
+  /** Emit the trailing Work-Type column? (Some companies omit it.) */
+  includeWorkType: boolean;
+
+  // ── Field sources ───────────────────────────────────────────
+  /** Where the Style/PO value comes from. */
+  stylePoSource: StylePoSource;
+  /** Strip a trailing parenthetical like " (2nd)" from the Style/PO. */
+  stylePoStripSuffix: boolean;
+  /** Which GSM value to use (per-booking heading vs per-fabric metadata). */
+  gsmSource: GsmSource;
+
+  // ── Field formatting ────────────────────────────────────────
+  /** Keep the full color string (Pantone/codes) or clean to the pure name. */
+  colorMode: ColorMode;
+  /** Keep width as written or normalize (strip quotes, OPEN → Inch Open). */
+  widthMode: WidthMode;
+  /** How the Special Instruction column is produced. */
+  specialMode: SpecialMode;
+  /** Value used when specialMode = "fixed". */
+  specialFixedValue: string;
+
+  // ── Lookups & fixed values ──────────────────────────────────
+  /** Normalize raw fabric names → display names. Keyed by lowercase raw name. */
+  fabricNameMap: Record<string, string>;
+  /** Fabric name (lowercase raw) → item code. Takes precedence over PDF value. */
+  itemCodeMap: Record<string, string>;
+  /** Quantity unit written to every row. */
+  qtyUnit: string;
+  /** Backorder Type written to every row. */
+  backorderType: string;
+  /** Work-Type value (only used when includeWorkType is true). */
+  workTypeValue: string;
+  /** Fallback unit price used when the PDF had none. Empty = leave blank. */
+  defaultUnitPrice: string;
+}
+
+// ─────────────────────────────────────────────────────────────
+// Built-in presets
+// ─────────────────────────────────────────────────────────────
+
+/** A neutral starting point that keeps everything as extracted. */
+export const GENERIC_CONFIG: CompanyConfig = {
+  id: "generic",
+  name: "Generic (as extracted)",
+  includeWorkType: true,
+  stylePoSource: "documentPo",
+  stylePoStripSuffix: false,
+  gsmSource: "heading",
+  colorMode: "full",
+  widthMode: "asExtracted",
+  specialMode: "asExtracted",
+  specialFixedValue: "",
+  fabricNameMap: {},
+  itemCodeMap: {},
+  qtyUnit: "KG",
+  backorderType: "Order Now",
+  workTypeValue: "Full Order",
+  defaultUnitPrice: "",
+};
+
+/** CZ Dia: per-booking style code + GSM, clean colors, blank instruction,
+ *  no Work-Type column, unit price 2.10. */
+export const CZ_DIA_CONFIG: CompanyConfig = {
+  id: "cz-dia",
+  name: "CZ Dia",
+  includeWorkType: false,
+  stylePoSource: "styleCode",
+  stylePoStripSuffix: false,
+  gsmSource: "heading",
+  colorMode: "clean",
+  widthMode: "normalize",
+  specialMode: "blank",
+  specialFixedValue: "",
+  fabricNameMap: {
+    rib: "2X2 Lycra Rib",
+    "2x2 rib": "2X2 Lycra Rib",
+    fleece: "Fleece",
+    "single jersey": "Single Jersey",
+  },
+  itemCodeMap: {
+    fleece: "FG-00003",
+    rib: "FG-00007",
+    "2x2 rib": "FG-00007",
+    "2x2 lycra rib": "FG-00007",
+    "single jersey": "FG-00010",
+  },
+  qtyUnit: "KG",
+  backorderType: "Order Now",
+  workTypeValue: "Full Order",
+  defaultUnitPrice: "2.10",
+};
+
+/** Ripon Knitwear: document PO (strip suffix), full Pantone colors,
+ *  fixed "Y/D" instruction, keeps Work-Type. */
+export const RIPON_CONFIG: CompanyConfig = {
+  id: "ripon",
+  name: "Ripon Knitwear",
+  includeWorkType: true,
+  stylePoSource: "documentPo",
+  stylePoStripSuffix: true,
+  gsmSource: "heading",
+  colorMode: "full",
+  widthMode: "asExtracted",
+  specialMode: "fixed",
+  specialFixedValue: "Y/D",
+  fabricNameMap: {
+    "single jersey": "Single Jersey",
+  },
+  itemCodeMap: {
+    "single jersey": "FG-00010",
+  },
+  qtyUnit: "KG",
+  backorderType: "Order Now",
+  workTypeValue: "Full Order",
+  defaultUnitPrice: "",
+};
+
+export const BUILTIN_CONFIGS: CompanyConfig[] = [
+  GENERIC_CONFIG,
+  CZ_DIA_CONFIG,
+  RIPON_CONFIG,
+];
+
+/** Deep-clone a config (so edits don't mutate a shared preset object). */
+export function cloneConfig(cfg: CompanyConfig): CompanyConfig {
+  return {
+    ...cfg,
+    fabricNameMap: { ...cfg.fabricNameMap },
+    itemCodeMap: { ...cfg.itemCodeMap },
+  };
+}

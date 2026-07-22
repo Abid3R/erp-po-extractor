@@ -521,6 +521,142 @@ td.empty {
   max-width: 340px;
 }
 
+/* ─── Company config panel ───────────────────────────────────────────────── */
+
+.preset-picker select,
+.cfg-field select,
+.cfg-field input,
+.map-row input,
+.cfg-save input,
+.map-add input {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-size: 13px;
+  padding: 8px 10px;
+  width: 100%;
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+.preset-picker select:focus,
+.cfg-field select:focus,
+.cfg-field input:focus,
+.map-row input:focus,
+.cfg-save input:focus,
+.map-add input:focus {
+  border-color: var(--accent);
+}
+
+.cfg-field input:disabled {
+  opacity: 0.4;
+}
+
+.preset-picker {
+  min-width: 200px;
+}
+
+.cfg-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 14px;
+  margin: 16px 0 4px;
+}
+
+.cfg-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.cfg-label {
+  font-size: 12px;
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.cfg-toggles {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 18px;
+  margin: 14px 0 4px;
+}
+
+.cfg-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.cfg-check input {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--accent);
+}
+
+.cfg-subhead {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  margin: 20px 0 10px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+
+.map-table {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.map-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr 36px;
+  gap: 10px;
+  align-items: center;
+}
+
+.map-row.map-head {
+  font-size: 11px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.map-key {
+  font-size: 13px;
+  color: var(--text);
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.map-add {
+  grid-template-columns: 1fr auto;
+  margin-top: 4px;
+}
+
+.cfg-save {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+
+.cfg-save input {
+  flex: 1;
+  min-width: 180px;
+  max-width: 280px;
+}
+
 /* ─── Responsive ─────────────────────────────────────────────────────────── */
 
 @media (max-width: 600px) {
@@ -534,5 +670,14 @@ td.empty {
 
   .history-item {
     flex-wrap: wrap;
+  }
+
+  .map-row,
+  .map-row.map-head {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .map-row.map-head {
+    display: none;
   }
 }

@@ -1,16 +1,10 @@
 // Deterministic CSV generation for the ERP solution.
 //
-// The fixed two-row header (human-readable labels + ERP field codes) is always
-// emitted exactly, followed by one line per extracted row. Because the header
-// and column order come from lib/schema.ts, they can never drift from the
-// values the model returns.
+// The two-row header (human-readable labels + ERP field codes) and the column
+// order are driven by the ColumnDef[] passed in, so a company that omits a
+// column (e.g. Work-Type) gets a header and body that match exactly.
 
-import {
-  ExtractedRow,
-  HEADER_CODES,
-  HEADER_LABELS,
-  ROW_KEYS,
-} from "./schema";
+import { ColumnDef, COLUMNS, ExtractedRow } from "./schema";
 
 // Escape a single CSV field per RFC 4180.
 // A field is quoted when it contains a comma, double quote, or newline.
@@ -29,18 +23,22 @@ function toLine(fields: string[]): string {
 }
 
 // Generate the full CSV text for a set of extracted rows.
-// Uses CRLF line endings for maximum compatibility with spreadsheet/ERP imports.
-export function generateCsv(rows: ExtractedRow[]): string {
+// `columns` selects which fields (and in what order) are emitted; defaults to
+// the full fixed schema. Uses CRLF line endings for spreadsheet/ERP imports.
+export function generateCsv(
+  rows: ExtractedRow[],
+  columns: ColumnDef[] = COLUMNS,
+): string {
   const lines: string[] = [];
 
   // Row 1: human-readable labels. Row 2: ERP field codes.
-  lines.push(toLine(HEADER_LABELS));
-  lines.push(toLine(HEADER_CODES));
+  lines.push(toLine(columns.map((c) => c.label)));
+  lines.push(toLine(columns.map((c) => c.code)));
 
-  // Data rows, in the exact column order defined by ROW_KEYS.
+  // Data rows, in the exact column order supplied.
   for (const row of rows) {
-    const fields = ROW_KEYS.map((key) => {
-      const raw = row[key];
+    const fields = columns.map((c) => {
+      const raw = row[c.key];
       return raw === undefined || raw === null ? "" : String(raw);
     });
     lines.push(toLine(fields));

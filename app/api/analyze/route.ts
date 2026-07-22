@@ -1,47 +1,26 @@
 // Backend route: accepts an uploaded PDF, extracts raw document structure via
-// Google Gemini, then applies 5 universal rules server-side to produce
-// ERP-ready rows keyed exactly like lib/schema.ts.
+// Google Gemini, then flattens it into NEUTRAL RawLineItem[] — one row per
+// (fabric-column × color) — applying NO company-specific formatting.
 //
-// Rule 1 – Build fabric metadata dictionary from the intro block.
-// Rule 2 – Map each table column to a fabric metadata entry.
-// Rule 3 – Emit one output row per (fabric-column × color) pair where qty > 0.
-// Rule 4 – Validate per-column sums against official totals; auto-correct OCR typos.
-// Rule 5 – Infer GSM from heading; default Qty Unit = KG.
+// All company choices (which GSM, clean vs full color, style-code vs PO,
+// item codes, Work-Type column, etc.) are applied later, client-side, by
+// lib/transform.ts using a CompanyConfig. This lets the user re-generate the
+// CSV for any company — and re-do it with different settings — without ever
+// re-analyzing the PDF.
 //
-// Hardcoded company defaults:
-//   Work-Type    = "Full Order"
-//   Backorder    = "Order Now"
-//   "Rib"        → renamed to "2X2 LYCRA RIB"
-//   Item codes   = FG-00003 (Fleece), FG-00007 (2X2 LYCRA RIB), FG-00010 (Single Jersey)
+// Universal (non-company) rules kept here:
+//   • Build a fabric metadata dictionary from the intro block.
+//   • Map each table column to a fabric metadata entry.
+//   • Emit one raw item per (fabric-column × color) where qty > 0.
+//   • Validate per-column sums against official totals; auto-correct OCR typos.
+//   • Carry BOTH the heading GSM and the metadata GSM so the config can pick.
 
 import { GoogleGenAI, Type } from "@google/genai";
 import { z } from "zod";
-import { ExtractedRow } from "@/lib/schema";
+import { RawLineItem } from "@/lib/schema";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
-
-// ─────────────────────────────────────────────────────────────
-// Hardcoded company-specific lookups
-// ─────────────────────────────────────────────────────────────
-
-/** Normalise fabric names to company-standard names. */
-function normalizeFabricName(raw: string): string {
-  const t = raw.trim();
-  if (/^rib$/i.test(t)) return "2X2 LYCRA RIB";
-  return t;
-}
-
-/** Return the company item code for a (normalised) fabric name. */
-const ITEM_CODE_MAP: Record<string, string> = {
-  "fleece": "FG-00003",
-  "2x2 lycra rib": "FG-00007",
-  "single jersey": "FG-00010",
-};
-
-function getItemCode(fabricName: string): string {
-  return ITEM_CODE_MAP[fabricName.toLowerCase().trim()] || "";
-}
 
 // ─────────────────────────────────────────────────────────────
 // Zod schemas for Gemini's intermediate output
@@ -49,10 +28,12 @@ function getItemCode(fabricName: string): string {
 
 const ZFabricMeta = z.object({
   fabricName: z.string(),
+  itemCode: z.string(),
   composition: z.string(),
   gsm: z.string(),
   width: z.string(),
   specialInstruction: z.string(),
+  unitPrice: z.string(),
 });
 
 const ZFabricColumn = z.object({
@@ -63,11 +44,13 @@ const ZFabricColumn = z.object({
 const ZColorRow = z.object({
   color: z.string(),
   quantities: z.array(z.string()),
+  unitPrice: z.string(),
 });
 
 const ZTable = z.object({
   heading: z.string(),
   bookingNumber: z.string(),
+  styleCode: z.string(),
   gsmFromHeading: z.string(),
   fabricColumns: z.array(ZFabricColumn),
   colorRows: z.array(ZColorRow),
@@ -99,13 +82,31 @@ const responseSchema = {
         type: Type.OBJECT,
         properties: {
           fabricName: { type: Type.STRING },
+          itemCode: { type: Type.STRING },
           composition: { type: Type.STRING },
           gsm: { type: Type.STRING },
           width: { type: Type.STRING },
           specialInstruction: { type: Type.STRING },
+          unitPrice: { type: Type.STRING },
         },
-        required: ["fabricName", "composition", "gsm", "width", "specialInstruction"],
-        propertyOrdering: ["fabricName", "composition", "gsm", "width", "specialInstruction"],
+        required: [
+          "fabricName",
+          "itemCode",
+          "composition",
+          "gsm",
+          "width",
+          "specialInstruction",
+          "unitPrice",
+        ],
+        propertyOrdering: [
+          "fabricName",
+          "itemCode",
+          "composition",
+          "gsm",
+          "width",
+          "specialInstruction",
+          "unitPrice",
+        ],
       },
     },
     tables: {
@@ -115,6 +116,7 @@ const responseSchema = {
         properties: {
           heading: { type: Type.STRING },
           bookingNumber: { type: Type.STRING },
+          styleCode: { type: Type.STRING },
           gsmFromHeading: { type: Type.STRING },
           fabricColumns: {
             type: Type.ARRAY,
@@ -138,9 +140,10 @@ const responseSchema = {
                   type: Type.ARRAY,
                   items: { type: Type.STRING },
                 },
+                unitPrice: { type: Type.STRING },
               },
-              required: ["color", "quantities"],
-              propertyOrdering: ["color", "quantities"],
+              required: ["color", "quantities", "unitPrice"],
+              propertyOrdering: ["color", "quantities", "unitPrice"],
             },
           },
           officialColumnTotals: {
@@ -151,6 +154,7 @@ const responseSchema = {
         required: [
           "heading",
           "bookingNumber",
+          "styleCode",
           "gsmFromHeading",
           "fabricColumns",
           "colorRows",
@@ -159,6 +163,7 @@ const responseSchema = {
         propertyOrdering: [
           "heading",
           "bookingNumber",
+          "styleCode",
           "gsmFromHeading",
           "fabricColumns",
           "colorRows",
@@ -176,12 +181,12 @@ const responseSchema = {
 
 const SYSTEM_PROMPT = `You are a meticulous data-extraction engine for an ERP purchase-order pipeline.
 
-You will receive a purchase order PDF (which may be a scanned image). Extract the document structure exactly as described. Accuracy is the top priority.
+You will receive a purchase order PDF (which may be a scanned image). Extract the document structure exactly as described. Accuracy is the top priority. Transcribe values EXACTLY as written — do NOT clean, reformat, translate, round, or normalize anything. Downstream software applies any company-specific formatting.
 
 ────────────────────────
 STEP 1 – Header fields
 ────────────────────────
-• stylePo       : Style/PO number or order reference code (e.g., "13-26-1-103"). Usually at the top.
+• stylePo       : Document-level Style/PO number or order reference (e.g., "CZ 02/2025", "SS26LO395-02 (2nd)"). Transcribe exactly, including any suffix. Usually at the top.
 • requestedDate : Required delivery date exactly as written. Empty string if absent.
 
 ────────────────────────────────────────────────
@@ -189,16 +194,16 @@ STEP 2 – Fabric metadata (from the intro block)
 ────────────────────────────────────────────────
 Read the descriptive text that appears BEFORE the tables. For each distinct fabric type, extract one entry:
 
-• fabricName         : Fabric type name as written (e.g., "Fleece", "Rib", "Single Jersey").
-• composition        : Fibre composition (e.g., "80% Cotton 20% Polyester"). Empty string if absent.
-• gsm                : GSM value (e.g., "280/290", "400", "160"). Empty string if absent.
-• width              : Width specification matched to this fabric type (e.g., "72 Inch Open").
-                       Empty string if absent.
-• specialInstruction : Special production notes for this fabric.
-                       – Join multiple notes with " & " (NOT with a comma or semicolon).
+• fabricName         : Fabric type name as written (e.g., "Fleece", "Rib", "Single Jersey"). Do NOT rename or expand it.
+• itemCode           : Any item/product/style code shown for this fabric (e.g., "FG-00003"). Empty string if absent.
+• composition        : Fibre composition exactly as written (e.g., "60% Cotton 40% Polyester", "100% Cotton"). Empty string if absent.
+• gsm                : GSM value for this fabric as given in the metadata block (e.g., "280/290"). Empty string if absent.
+• width              : Width specification exactly as written (e.g., \`74"/76" OPEN\`, "72 Inch Open"). Empty string if absent.
+• specialInstruction : Special production notes for this fabric, exactly as written.
+                       – Join multiple separate notes with " & ".
                        – Do NOT include a trailing period or comma.
-                       – For Single Jersey fabric, always set this to "Single Jersey".
                        – Empty string if none.
+• unitPrice          : Unit price/rate for this fabric if shown (e.g., "2.10"). Empty string if absent.
 
 ────────────────────────────────────────────────
 STEP 3 – Tables
@@ -206,11 +211,11 @@ STEP 3 – Tables
 For EACH separate booking/order table in the document:
 
 • heading              : Full table heading exactly as written (e.g., "FABRIC BOOKING 1 280/290 GSM").
-• bookingNumber        : The sequential booking or table number from the heading.
-                         E.g., "FABRIC BOOKING 1 280/290 GSM" → "1".
-                         E.g., "FABRIC BOOKING 2 330/340 GSM" → "2".
-                         Empty string if no sequential number is present.
-• gsmFromHeading       : GSM value extracted from the heading (e.g., "280/290"). Empty string if absent.
+• bookingNumber        : The sequential booking/table number from the heading.
+                         E.g., "FABRIC BOOKING 1 280/290 GSM" → "1". Empty string if none.
+• styleCode            : The style/order code specific to THIS booking table (e.g., "MS09B", "LS400B"),
+                         taken from the table heading or its style row. Empty string if none.
+• gsmFromHeading       : GSM value extracted from THIS table's heading (e.g., "280/290"). Empty string if absent.
 • fabricColumns        : Array of FABRIC-TYPE columns ONLY.
                          ► EXCLUDE the COLOR/SHADE column.
                          ► EXCLUDE any TOTAL or GRAND TOTAL column.
@@ -221,21 +226,18 @@ For EACH separate booking/order table in the document:
                          ► EXCLUDE header rows.
                          ► EXCLUDE the TOTAL/SUMMARY row (put those in officialColumnTotals).
                          Each entry:
-                           – color      : Extract ONLY the pure color name — strip any dye/lab codes,
-                                          alphanumeric suffixes, or percentage annotations.
-                                          The color name is the leading word(s) of letters and spaces only.
-                                          Strip everything after the first hyphen-then-digit pattern or
-                                          space-then-4+-consecutive-digits pattern.
-                                          Examples:
-                                            "NERO-253018-C - D Black"        → "NERO"
-                                            "STONE WHITE-253174-B-D0.09/487" → "STONE WHITE"
-                                            "NOCE 253025-C-D1.6%"            → "NOCE"
-                                            "BLU 253175-A D-57."             → "BLU"
-                                            "BLU SPACE"                      → "BLU SPACE"
-                                            "BRANDY BROWN"                   → "BRANDY BROWN"
+                           – color      : The FULL color/shade cell EXACTLY as written, INCLUDING any
+                                          Pantone / lab / dye codes and suffixes. Do NOT strip anything.
+                                          Examples (transcribe verbatim):
+                                            "NERO-253018-C - D Black"
+                                            "LUCENT WHITE 11-0700 TCX"
+                                            "BLU SPACE"
                            – quantities : Array PARALLEL to fabricColumns.
                                           Transcribe EXACTLY as shown, including commas (e.g., "1,452").
                                           Use "0" for empty or zero cells.
+                           – unitPrice  : The unit price / rate shown for THIS color row, if the table
+                                          lists a price per colour/shade (e.g., "55", "153", "2.10").
+                                          Transcribe exactly. Empty string if this row has no price.
 • officialColumnTotals : Array PARALLEL to fabricColumns with the total quantities from the
                          TOTAL/SUMMARY row. Transcribe exactly as written.
 
@@ -305,7 +307,7 @@ function extractGsmFromText(text: string): string {
   return m ? m[1] : "";
 }
 
-/** Build a FabricMeta entry from a column header (fallback when metadata lookup fails). */
+/** Build a FabricMeta entry from a column header (fallback when lookup fails). */
 function metaFromHeader(headerText: string, fallbackGsm: string): FabricMeta {
   const gsmMatch = headerText.match(/(\d+(?:[/\-]\d+)?)\s*GSM/i);
   const name = headerText
@@ -314,30 +316,17 @@ function metaFromHeader(headerText: string, fallbackGsm: string): FabricMeta {
     .trim();
   return {
     fabricName: name || headerText,
+    itemCode: "",
     composition: "",
     gsm: gsmMatch ? gsmMatch[1] : fallbackGsm,
     width: "",
     specialInstruction: "",
+    unitPrice: "",
   };
 }
 
-/**
- * Strip lab/dye codes appended to color names.
- * E.g.: "NERO-253018-C - D Black"        → "NERO"
- *        "STONE WHITE-253174-B-D0.09/487" → "STONE WHITE"
- *        "NOCE 253025-C-D1.6%"            → "NOCE"
- *        "BLU 253175-A D-57."             → "BLU"
- *        "BLU SPACE"                      → "BLU SPACE"  (unchanged)
- */
-function cleanColorName(raw: string): string {
-  const s = raw.trim();
-  const m = s.match(/^([A-Za-z][A-Za-z\s]*?)(?:\s*-\s*\d|\s+\d{4,})/);
-  if (m) return m[1].trim();
-  return s;
-}
-
 // ─────────────────────────────────────────────────────────────
-// Rule 4 – Math validation and OCR correction
+// Math validation and OCR correction (universal, non-company)
 // ─────────────────────────────────────────────────────────────
 
 function digitOverlap(a: number, b: number): number {
@@ -404,17 +393,17 @@ function validateAndCorrect(
 }
 
 // ─────────────────────────────────────────────────────────────
-// Rules 1–5: build ExtractedRow[] from Gemini's document structure
+// Build neutral RawLineItem[] from Gemini's document structure
 // ─────────────────────────────────────────────────────────────
 
-function buildRows(doc: DocumentStructure): {
-  rows: ExtractedRow[];
+function buildRawItems(doc: DocumentStructure): {
+  items: RawLineItem[];
   warnings: string[];
 } {
-  const allRows: ExtractedRow[] = [];
+  const allItems: RawLineItem[] = [];
   const allWarnings: string[] = [];
 
-  // Rule 1: build case-insensitive metadata lookup keyed by fabricName.
+  // Case-insensitive metadata lookup keyed by fabricName.
   const metaMap = new Map<string, FabricMeta>(
     doc.fabricMetadata.map((m) => [m.fabricName.toLowerCase().trim(), m]),
   );
@@ -422,7 +411,6 @@ function buildRows(doc: DocumentStructure): {
   for (const table of doc.tables) {
     const { heading, fabricColumns, colorRows, officialColumnTotals } = table;
 
-    // Rule 5: prefer Gemini's gsmFromHeading, fall back to regex extraction.
     const headingGsm =
       table.gsmFromHeading.trim() || extractGsmFromText(heading);
 
@@ -436,7 +424,7 @@ function buildRows(doc: DocumentStructure): {
 
     const correctedMatrix: number[][] = rawMatrix.map((row) => [...row]);
 
-    // Rule 4: validate and correct one column at a time.
+    // Validate and correct one column at a time.
     for (let colIdx = 0; colIdx < fabricColumns.length; colIdx++) {
       const officialTotal = parsedTotals[colIdx] ?? 0;
       if (officialTotal === 0) continue;
@@ -454,50 +442,43 @@ function buildRows(doc: DocumentStructure): {
       }
     }
 
-    // Rule 3: emit one ExtractedRow per (fabricColumn × colorRow) where qty > 0.
-    // Outer loop = fabric columns → all colors for one fabric are grouped together.
+    // Emit one raw item per (fabricColumn × colorRow) where qty > 0.
+    // Outer loop = fabric columns → all colors for one fabric are grouped.
     for (let colIdx = 0; colIdx < fabricColumns.length; colIdx++) {
       const fabCol = fabricColumns[colIdx];
 
-      // Rule 2: resolve fabric metadata by name; fall back to header parsing.
+      // Resolve fabric metadata by name; fall back to header parsing.
       const meta =
         metaMap.get(fabCol.fabricName.toLowerCase().trim()) ??
         metaFromHeader(fabCol.headerText, headingGsm);
-
-      // Apply company-specific fabric name normalisation ("Rib" → "2X2 LYCRA RIB").
-      const fabricName = normalizeFabricName(meta.fabricName || fabCol.fabricName);
-      const itemCode = getItemCode(fabricName);
 
       for (let rowIdx = 0; rowIdx < colorRows.length; rowIdx++) {
         const colorRow = colorRows[rowIdx];
         const qty = correctedMatrix[rowIdx][colIdx];
         if (qty <= 0) continue;
 
-        const row: ExtractedRow = {
-          itemName: fabricName,
-          itemCode,
-          stylePo: table.bookingNumber || doc.stylePo,
+        allItems.push({
+          fabricName: meta.fabricName || fabCol.fabricName,
+          itemCode: meta.itemCode,
+          documentPo: doc.stylePo,
+          bookingNumber: table.bookingNumber,
+          styleCode: table.styleCode,
           composition: meta.composition,
-          gsm: meta.gsm || headingGsm,
-          stitchLength: "",
+          gsmHeading: headingGsm,
+          gsmMetadata: meta.gsm,
           width: meta.width,
-          size: "",
-          colorCode: cleanColorName(colorRow.color),
+          colorFull: colorRow.color,
           specialInstruction: meta.specialInstruction,
+          // Prefer a per-colour price; fall back to the fabric's price.
+          unitPrice: colorRow.unitPrice?.trim() || meta.unitPrice,
+          requestedDate: doc.requestedDate,
           qty: String(qty),
-          qtyUnit: "KG",
-          unitPrice: "",
-          requestedDate: "",
-          backorderType: "Order Now",
-          workType: "Full Order",
-        };
-
-        allRows.push(row);
+        });
       }
     }
   }
 
-  return { rows: allRows, warnings: allWarnings };
+  return { items: allItems, warnings: allWarnings };
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -586,9 +567,9 @@ export async function POST(request: Request): Promise<Response> {
       );
     }
 
-    const { rows, warnings } = buildRows(validated.data);
+    const { items, warnings } = buildRawItems(validated.data);
 
-    return new Response(JSON.stringify({ rows, warnings }), {
+    return new Response(JSON.stringify({ items, warnings }), {
       status: 200,
       headers: { "content-type": "application/json" },
     });

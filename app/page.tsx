@@ -1,9 +1,16 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { COLUMNS, ROW_KEYS, ExtractedRow } from "@/lib/schema";
+import { RawLineItem } from "@/lib/schema";
 import { generateCsv } from "@/lib/csv";
+import { applyConfig, activeColumns } from "@/lib/transform";
+import {
+  CompanyConfig,
+  BUILTIN_CONFIGS,
+  GENERIC_CONFIG,
+  cloneConfig,
+} from "@/lib/config";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -18,13 +25,16 @@ type HistoryEntry = {
   filename: string;
   timestamp: number;
   rowCount: number;
-  rows: ExtractedRow[];
+  items: RawLineItem[];
+  config: CompanyConfig;
 };
 
-// ─── History helpers (localStorage) ──────────────────────────────────────────
+// ─── Persistence helpers (localStorage) ──────────────────────────────────────
 
 const HISTORY_KEY = "erp-history";
+const CONFIGS_KEY = "erp-configs";
 const MAX_HISTORY = 30;
+const BUILTIN_IDS = new Set(BUILTIN_CONFIGS.map((c) => c.id));
 
 function loadHistory(): HistoryEntry[] {
   if (typeof window === "undefined") return [];
@@ -36,10 +46,21 @@ function loadHistory(): HistoryEntry[] {
 }
 
 function saveHistory(entries: HistoryEntry[]) {
-  localStorage.setItem(
-    HISTORY_KEY,
-    JSON.stringify(entries.slice(0, MAX_HISTORY)),
-  );
+  localStorage.setItem(HISTORY_KEY, JSON.stringify(entries.slice(0, MAX_HISTORY)));
+}
+
+function loadCustomConfigs(): CompanyConfig[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const list = JSON.parse(localStorage.getItem(CONFIGS_KEY) || "[]");
+    return Array.isArray(list) ? list : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveCustomConfigs(list: CompanyConfig[]) {
+  localStorage.setItem(CONFIGS_KEY, JSON.stringify(list));
 }
 
 function formatDate(ts: number): string {
@@ -154,20 +175,68 @@ function IconHistory() {
   );
 }
 
+// ─── Small config-control building blocks ────────────────────────────────────
+
+function Field({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <label className="cfg-field">
+      <span className="cfg-label">{label}</span>
+      {children}
+    </label>
+  );
+}
+
 // ─── Page ────────────────────────────────────────────────────────────────────
 
 export default function Page() {
   const [file, setFile] = useState<File | null>(null);
-  const [rows, setRows] = useState<ExtractedRow[] | null>(null);
+  const [items, setItems] = useState<RawLineItem[] | null>(null);
   const [status, setStatus] = useState<Status>({ kind: "idle" });
   const [dragging, setDragging] = useState(false);
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [activeTab, setActiveTab] = useState<"upload" | "history">("upload");
   const inputRef = useRef<HTMLInputElement>(null);
 
+  // Company-config state.
+  const [customConfigs, setCustomConfigs] = useState<CompanyConfig[]>([]);
+  const [config, setConfig] = useState<CompanyConfig>(() =>
+    cloneConfig(GENERIC_CONFIG),
+  );
+  const [presetName, setPresetName] = useState("");
+
   useEffect(() => {
     setHistory(loadHistory());
+    setCustomConfigs(loadCustomConfigs());
   }, []);
+
+  const allConfigs = useMemo(
+    () => [...BUILTIN_CONFIGS, ...customConfigs],
+    [customConfigs],
+  );
+
+  // Live "Redo": recompute final rows + columns whenever items or config change.
+  const columns = useMemo(() => activeColumns(config), [config]);
+  const rows = useMemo(
+    () => (items ? applyConfig(items, config) : []),
+    [items, config],
+  );
+
+  const up = useCallback((patch: Partial<CompanyConfig>) => {
+    setConfig((c) => ({ ...c, ...patch }));
+  }, []);
+
+  const selectPreset = useCallback(
+    (id: string) => {
+      const found = [...BUILTIN_CONFIGS, ...loadCustomConfigs()].find(
+        (c) => c.id === id,
+      );
+      if (found) {
+        setConfig(cloneConfig(found));
+        setPresetName(BUILTIN_IDS.has(found.id) ? "" : found.name);
+      }
+    },
+    [],
+  );
 
   const pickFile = useCallback((f: File | null) => {
     if (!f) return;
@@ -176,7 +245,7 @@ export default function Page() {
       return;
     }
     setFile(f);
-    setRows(null);
+    setItems(null);
     setStatus({ kind: "idle" });
   }, []);
 
@@ -192,14 +261,14 @@ export default function Page() {
   const analyze = useCallback(async () => {
     if (!file) return;
     setStatus({ kind: "loading" });
-    setRows(null);
+    setItems(null);
     try {
       const body = new FormData();
       body.append("file", file);
 
       const res = await fetch("/api/analyze", { method: "POST", body });
       const data = (await res.json()) as
-        | { rows: ExtractedRow[]; warnings?: string[] }
+        | { items: RawLineItem[]; warnings?: string[] }
         | { error: string };
 
       if (!res.ok || "error" in data) {
@@ -209,15 +278,16 @@ export default function Page() {
         return;
       }
 
-      setRows(data.rows);
-      setStatus({ kind: "done", count: data.rows.length });
+      setItems(data.items);
+      setStatus({ kind: "done", count: data.items.length });
 
       const entry: HistoryEntry = {
         id: Date.now().toString(),
         filename: file.name,
         timestamp: Date.now(),
-        rowCount: data.rows.length,
-        rows: data.rows,
+        rowCount: data.items.length,
+        items: data.items,
+        config: cloneConfig(config),
       };
       setHistory((prev) => {
         const next = [entry, ...prev].slice(0, MAX_HISTORY);
@@ -228,12 +298,12 @@ export default function Page() {
       const message = err instanceof Error ? err.message : "Network error.";
       setStatus({ kind: "error", message });
     }
-  }, [file]);
+  }, [file, config]);
 
-  const downloadRows = useCallback(
-    (targetRows: ExtractedRow[], filename: string) => {
-      const csv = generateCsv(targetRows);
-      const blob = new Blob(["\uFEFF" + csv], {
+  const downloadWith = useCallback(
+    (srcItems: RawLineItem[], cfg: CompanyConfig, filename: string) => {
+      const csv = generateCsv(applyConfig(srcItems, cfg), activeColumns(cfg));
+      const blob = new Blob(["﻿" + csv], {
         type: "text/csv;charset=utf-8;",
       });
       const url = URL.createObjectURL(blob);
@@ -249,13 +319,41 @@ export default function Page() {
   );
 
   const download = useCallback(() => {
-    if (!rows || !file) return;
-    downloadRows(rows, file.name);
-  }, [rows, file, downloadRows]);
+    if (!items || !file) return;
+    downloadWith(items, config, file.name);
+  }, [items, file, config, downloadWith]);
+
+  const savePreset = useCallback(() => {
+    const name = presetName.trim();
+    if (!name) return;
+    setCustomConfigs((prev) => {
+      // Overwrite an existing custom preset with the same name, else add new.
+      const existing = prev.find((c) => c.name === name);
+      const id = existing ? existing.id : `custom-${Date.now()}`;
+      const saved: CompanyConfig = { ...cloneConfig(config), id, name };
+      const next = existing
+        ? prev.map((c) => (c.id === id ? saved : c))
+        : [...prev, saved];
+      saveCustomConfigs(next);
+      setConfig(cloneConfig(saved));
+      return next;
+    });
+  }, [config, presetName]);
+
+  const deletePreset = useCallback(() => {
+    if (BUILTIN_IDS.has(config.id)) return;
+    setCustomConfigs((prev) => {
+      const next = prev.filter((c) => c.id !== config.id);
+      saveCustomConfigs(next);
+      return next;
+    });
+    setConfig(cloneConfig(GENERIC_CONFIG));
+    setPresetName("");
+  }, [config.id]);
 
   const reset = useCallback(() => {
     setFile(null);
-    setRows(null);
+    setItems(null);
     setStatus({ kind: "idle" });
     if (inputRef.current) inputRef.current.value = "";
   }, []);
@@ -273,7 +371,51 @@ export default function Page() {
     saveHistory([]);
   }, []);
 
+  // Fabric-mapping editor helpers (fabricNameMap + itemCodeMap share keys).
+  const fabricKeys = useMemo(() => {
+    const set = new Set<string>([
+      ...Object.keys(config.fabricNameMap),
+      ...Object.keys(config.itemCodeMap),
+    ]);
+    return Array.from(set);
+  }, [config.fabricNameMap, config.itemCodeMap]);
+
+  const setMapping = useCallback(
+    (key: string, field: "name" | "code", value: string) => {
+      setConfig((c) => {
+        if (field === "name") {
+          return { ...c, fabricNameMap: { ...c.fabricNameMap, [key]: value } };
+        }
+        return { ...c, itemCodeMap: { ...c.itemCodeMap, [key]: value } };
+      });
+    },
+    [],
+  );
+
+  const removeMapping = useCallback((key: string) => {
+    setConfig((c) => {
+      const fn = { ...c.fabricNameMap };
+      const ic = { ...c.itemCodeMap };
+      delete fn[key];
+      delete ic[key];
+      return { ...c, fabricNameMap: fn, itemCodeMap: ic };
+    });
+  }, []);
+
+  const [newFabricKey, setNewFabricKey] = useState("");
+  const addMapping = useCallback(() => {
+    const key = newFabricKey.trim().toLowerCase();
+    if (!key) return;
+    setConfig((c) => ({
+      ...c,
+      fabricNameMap: { [key]: c.fabricNameMap[key] ?? "", ...c.fabricNameMap },
+      itemCodeMap: { [key]: c.itemCodeMap[key] ?? "", ...c.itemCodeMap },
+    }));
+    setNewFabricKey("");
+  }, [newFabricKey]);
+
   const loading = status.kind === "loading";
+  const isCustom = !BUILTIN_IDS.has(config.id);
 
   return (
     <div className="page-wrapper">
@@ -323,7 +465,7 @@ export default function Page() {
       <div className="container">
         <AnimatePresence mode="wait">
 
-          {/* ═══════════════════════════════════ UPLOAD TAB ═══════════════════════════════════ */}
+          {/* ═══════════════════════════ UPLOAD TAB ═══════════════════════════ */}
           {activeTab === "upload" && (
             <motion.div
               key="upload"
@@ -348,8 +490,9 @@ export default function Page() {
                   animate={{ opacity: 1 }}
                   transition={{ delay: 0.2, duration: 0.5 }}
                 >
-                  Upload a fabric purchase-order PDF and receive a clean,
-                  ERP-ready CSV in seconds.
+                  Upload a fabric purchase-order PDF, then tune the output to each
+                  company&apos;s format and re-generate the CSV instantly — no
+                  re-upload needed.
                 </motion.p>
               </div>
 
@@ -372,9 +515,7 @@ export default function Page() {
                   }}
                   onDragLeave={() => setDragging(false)}
                   onDrop={onDrop}
-                  animate={
-                    dragging ? { scale: 1.015, borderColor: "#3b82f6" } : {}
-                  }
+                  animate={dragging ? { scale: 1.015, borderColor: "#3b82f6" } : {}}
                   transition={{ duration: 0.15 }}
                 >
                   <input
@@ -418,7 +559,7 @@ export default function Page() {
                   <motion.button
                     className="btn btn-ghost"
                     onClick={reset}
-                    disabled={loading || (!file && !rows)}
+                    disabled={loading || (!file && !items)}
                     whileHover={{ scale: 1.03 }}
                     whileTap={{ scale: 0.97 }}
                   >
@@ -469,9 +610,251 @@ export default function Page() {
                 </AnimatePresence>
               </motion.div>
 
-              {/* Results */}
+              {/* ── Company config panel ── */}
               <AnimatePresence>
-                {rows && rows.length > 0 && (
+                {items && items.length > 0 && (
+                  <motion.div
+                    className="card"
+                    initial={{ opacity: 0, y: 20 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: 20 }}
+                    transition={{ duration: 0.35 }}
+                  >
+                    <div className="card-header">
+                      <span className="card-title">Company Format</span>
+                      <div className="preset-picker">
+                        <select
+                          value={config.id}
+                          onChange={(e) => selectPreset(e.target.value)}
+                        >
+                          <optgroup label="Built-in">
+                            {BUILTIN_CONFIGS.map((c) => (
+                              <option key={c.id} value={c.id}>{c.name}</option>
+                            ))}
+                          </optgroup>
+                          {customConfigs.length > 0 && (
+                            <optgroup label="Saved">
+                              {customConfigs.map((c) => (
+                                <option key={c.id} value={c.id}>{c.name}</option>
+                              ))}
+                            </optgroup>
+                          )}
+                        </select>
+                      </div>
+                    </div>
+
+                    <p className="hint" style={{ marginTop: 0 }}>
+                      Adjust any setting below — the preview and download update
+                      instantly. Save your choices as a company preset so you
+                      never edit these again.
+                    </p>
+
+                    <div className="cfg-grid">
+                      <Field label="Style / PO source">
+                        <select
+                          value={config.stylePoSource}
+                          onChange={(e) =>
+                            up({ stylePoSource: e.target.value as CompanyConfig["stylePoSource"] })
+                          }
+                        >
+                          <option value="styleCode">Per-booking style code (MS09B)</option>
+                          <option value="bookingNumber">Booking number (1, 2, 3)</option>
+                          <option value="documentPo">Document PO (CZ 02/2025)</option>
+                        </select>
+                      </Field>
+
+                      <Field label="GSM source">
+                        <select
+                          value={config.gsmSource}
+                          onChange={(e) =>
+                            up({ gsmSource: e.target.value as CompanyConfig["gsmSource"] })
+                          }
+                        >
+                          <option value="heading">Per-booking table heading</option>
+                          <option value="metadata">Fabric metadata block</option>
+                        </select>
+                      </Field>
+
+                      <Field label="Color / Code">
+                        <select
+                          value={config.colorMode}
+                          onChange={(e) =>
+                            up({ colorMode: e.target.value as CompanyConfig["colorMode"] })
+                          }
+                        >
+                          <option value="full">Keep full (with Pantone/codes)</option>
+                          <option value="clean">Clean to pure name</option>
+                        </select>
+                      </Field>
+
+                      <Field label="Width">
+                        <select
+                          value={config.widthMode}
+                          onChange={(e) =>
+                            up({ widthMode: e.target.value as CompanyConfig["widthMode"] })
+                          }
+                        >
+                          <option value="asExtracted">As written</option>
+                          <option value="normalize">Normalize (Inch Open)</option>
+                        </select>
+                      </Field>
+
+                      <Field label="Special Instruction">
+                        <select
+                          value={config.specialMode}
+                          onChange={(e) =>
+                            up({ specialMode: e.target.value as CompanyConfig["specialMode"] })
+                          }
+                        >
+                          <option value="asExtracted">As extracted</option>
+                          <option value="blank">Always blank</option>
+                          <option value="fixed">Fixed value…</option>
+                        </select>
+                      </Field>
+
+                      {config.specialMode === "fixed" && (
+                        <Field label="Fixed instruction value">
+                          <input
+                            type="text"
+                            value={config.specialFixedValue}
+                            onChange={(e) => up({ specialFixedValue: e.target.value })}
+                            placeholder="e.g. Y/D"
+                          />
+                        </Field>
+                      )}
+
+                      <Field label="Qty Unit">
+                        <input
+                          type="text"
+                          value={config.qtyUnit}
+                          onChange={(e) => up({ qtyUnit: e.target.value })}
+                        />
+                      </Field>
+
+                      <Field label="Backorder Type">
+                        <input
+                          type="text"
+                          value={config.backorderType}
+                          onChange={(e) => up({ backorderType: e.target.value })}
+                        />
+                      </Field>
+
+                      <Field label="Default Unit Price">
+                        <input
+                          type="text"
+                          value={config.defaultUnitPrice}
+                          onChange={(e) => up({ defaultUnitPrice: e.target.value })}
+                          placeholder="(blank)"
+                        />
+                      </Field>
+
+                      <Field label="Work-Type value">
+                        <input
+                          type="text"
+                          value={config.workTypeValue}
+                          onChange={(e) => up({ workTypeValue: e.target.value })}
+                          disabled={!config.includeWorkType}
+                        />
+                      </Field>
+                    </div>
+
+                    <div className="cfg-toggles">
+                      <label className="cfg-check">
+                        <input
+                          type="checkbox"
+                          checked={config.includeWorkType}
+                          onChange={(e) => up({ includeWorkType: e.target.checked })}
+                        />
+                        Include Work-Type column
+                      </label>
+                      <label className="cfg-check">
+                        <input
+                          type="checkbox"
+                          checked={config.stylePoStripSuffix}
+                          onChange={(e) => up({ stylePoStripSuffix: e.target.checked })}
+                        />
+                        Strip trailing “(…)” from Style / PO
+                      </label>
+                    </div>
+
+                    {/* Fabric name / item-code mappings */}
+                    <div className="cfg-subhead">Fabric mappings</div>
+                    <div className="map-table">
+                      <div className="map-row map-head">
+                        <span>Raw name (from PDF)</span>
+                        <span>Display name</span>
+                        <span>Item code</span>
+                        <span />
+                      </div>
+                      {fabricKeys.map((key) => (
+                        <div className="map-row" key={key}>
+                          <span className="map-key">{key}</span>
+                          <input
+                            type="text"
+                            value={config.fabricNameMap[key] ?? ""}
+                            onChange={(e) => setMapping(key, "name", e.target.value)}
+                            placeholder="(keep as-is)"
+                          />
+                          <input
+                            type="text"
+                            value={config.itemCodeMap[key] ?? ""}
+                            onChange={(e) => setMapping(key, "code", e.target.value)}
+                            placeholder="(none)"
+                          />
+                          <button
+                            className="btn btn-ghost btn-sm btn-icon"
+                            onClick={() => removeMapping(key)}
+                            title="Remove mapping"
+                          >
+                            <IconTrash />
+                          </button>
+                        </div>
+                      ))}
+                      <div className="map-row map-add">
+                        <input
+                          type="text"
+                          value={newFabricKey}
+                          onChange={(e) => setNewFabricKey(e.target.value)}
+                          placeholder="add fabric key, e.g. rib"
+                          onKeyDown={(e) => e.key === "Enter" && addMapping()}
+                        />
+                        <button className="btn btn-ghost btn-sm" onClick={addMapping}>
+                          + Add mapping
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Save / delete preset */}
+                    <div className="cfg-save">
+                      <input
+                        type="text"
+                        value={presetName}
+                        onChange={(e) => setPresetName(e.target.value)}
+                        placeholder="Preset name (e.g. CZ Dia)"
+                      />
+                      <button
+                        className="btn btn-primary btn-sm"
+                        onClick={savePreset}
+                        disabled={!presetName.trim()}
+                      >
+                        Save preset
+                      </button>
+                      {isCustom && (
+                        <button
+                          className="btn btn-ghost btn-sm"
+                          onClick={deletePreset}
+                        >
+                          Delete “{config.name}”
+                        </button>
+                      )}
+                    </div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+
+              {/* ── Preview / download ── */}
+              <AnimatePresence>
+                {items && items.length > 0 && (
                   <motion.div
                     className="card"
                     initial={{ opacity: 0, y: 20 }}
@@ -483,7 +866,8 @@ export default function Page() {
                       <span className="card-title">
                         Preview{" "}
                         <span className="muted">
-                          ({rows.length} row{rows.length === 1 ? "" : "s"})
+                          ({rows.length} row{rows.length === 1 ? "" : "s"} ·{" "}
+                          {config.name})
                         </span>
                       </span>
                       <motion.button
@@ -501,39 +885,28 @@ export default function Page() {
                       <table>
                         <thead>
                           <tr>
-                            {COLUMNS.map((c) => (
+                            {columns.map((c) => (
                               <th key={c.key}>{c.label}</th>
                             ))}
                           </tr>
                           <tr className="code-row">
-                            {COLUMNS.map((c) => (
+                            {columns.map((c) => (
                               <th key={c.key}>{c.code}</th>
                             ))}
                           </tr>
                         </thead>
                         <tbody>
                           {rows.map((row, i) => (
-                            <motion.tr
-                              key={i}
-                              initial={{ opacity: 0 }}
-                              animate={{ opacity: 1 }}
-                              transition={{
-                                duration: 0.25,
-                                delay: Math.min(i * 0.018, 0.6),
-                              }}
-                            >
-                              {ROW_KEYS.map((key) => {
-                                const value = row[key] ?? "";
+                            <tr key={i}>
+                              {columns.map((c) => {
+                                const value = row[c.key] ?? "";
                                 return (
-                                  <td
-                                    key={key}
-                                    className={value ? undefined : "empty"}
-                                  >
+                                  <td key={c.key} className={value ? undefined : "empty"}>
                                     {value || "—"}
                                   </td>
                                 );
                               })}
-                            </motion.tr>
+                            </tr>
                           ))}
                         </tbody>
                       </table>
@@ -549,7 +922,7 @@ export default function Page() {
             </motion.div>
           )}
 
-          {/* ═══════════════════════════════════ HISTORY TAB ═══════════════════════════════════ */}
+          {/* ═══════════════════════════ HISTORY TAB ═══════════════════════════ */}
           {activeTab === "history" && (
             <motion.div
               key="history"
@@ -561,8 +934,8 @@ export default function Page() {
               <div className="hero">
                 <h1 className="hero-title">Extraction History</h1>
                 <p className="hero-sub">
-                  Re-download any previously extracted CSV without re-uploading
-                  the PDF.
+                  Re-download any previously extracted CSV — with the currently
+                  selected company format — without re-uploading the PDF.
                 </p>
               </div>
 
@@ -612,9 +985,7 @@ export default function Page() {
                             <IconDocument />
                           </div>
                           <div className="history-info">
-                            <span className="history-name">
-                              {entry.filename}
-                            </span>
+                            <span className="history-name">{entry.filename}</span>
                             <span className="history-meta">
                               {formatDate(entry.timestamp)}
                               <span className="dot">·</span>
@@ -626,10 +997,11 @@ export default function Page() {
                             <motion.button
                               className="btn btn-primary btn-sm"
                               onClick={() =>
-                                downloadRows(entry.rows, entry.filename)
+                                downloadWith(entry.items, config, entry.filename)
                               }
                               whileHover={{ scale: 1.05 }}
                               whileTap={{ scale: 0.95 }}
+                              title={`Download using “${config.name}” format`}
                             >
                               <IconDownload />
                               CSV
