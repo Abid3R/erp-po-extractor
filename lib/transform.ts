@@ -41,11 +41,15 @@ function stripSuffix(s: string): string {
   return s.replace(/\s*\([^)]*\)\s*$/, "").trim();
 }
 
-/** The columns emitted for this config (Work-Type is optional). */
+/** The columns emitted for this config. A column is dropped when it is marked
+ *  removed in columnOverrides (or, for Work-Type, via the legacy toggle). */
 export function activeColumns(cfg: CompanyConfig): ColumnDef[] {
-  return cfg.includeWorkType
-    ? COLUMNS
-    : COLUMNS.filter((c) => c.key !== "workType");
+  const ov = cfg.columnOverrides ?? {};
+  return COLUMNS.filter((c) => {
+    if (ov[c.key]?.removed) return false;
+    if (c.key === "workType" && !cfg.includeWorkType) return false;
+    return true;
+  });
 }
 
 /** Apply a company config to the neutral raw items to produce final rows. */
@@ -103,7 +107,8 @@ export function applyConfig(
 
     const unitPrice = item.unitPrice || cfg.defaultUnitPrice;
 
-    return {
+    // 1) The extracted baseline (preset smarts applied).
+    const baseline: ExtractedRow = {
       itemName: fabricName,
       itemCode,
       stylePo,
@@ -119,7 +124,18 @@ export function applyConfig(
       unitPrice,
       requestedDate: item.requestedDate,
       backorderType: cfg.backorderType,
-      workType: cfg.includeWorkType ? cfg.workTypeValue : "",
+      workType: cfg.workTypeValue,
     };
+
+    // 2) Apply the simple per-column override (custom text / blank / extracted).
+    const ov = cfg.columnOverrides ?? {};
+    const row = { ...baseline } as ExtractedRow;
+    for (const c of COLUMNS) {
+      const o = ov[c.key];
+      if (!o) continue;
+      if (o.mode === "blank") row[c.key] = "";
+      else if (o.mode === "custom") row[c.key] = o.value;
+    }
+    return row;
   });
 }

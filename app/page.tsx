@@ -2,11 +2,13 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { RawLineItem } from "@/lib/schema";
+import { RawLineItem, COLUMNS } from "@/lib/schema";
 import { generateCsv } from "@/lib/csv";
 import { applyConfig, activeColumns } from "@/lib/transform";
 import {
   CompanyConfig,
+  ColumnMode,
+  ColumnOverride,
   BUILTIN_CONFIGS,
   GENERIC_CONFIG,
   cloneConfig,
@@ -224,6 +226,43 @@ export default function Page() {
   const up = useCallback((patch: Partial<CompanyConfig>) => {
     setConfig((c) => ({ ...c, ...patch }));
   }, []);
+
+  // ── Per-column editor (draft) ──
+  // The column choices are edited in a draft, then committed to the config with
+  // the "Update CSV" button — so the preview/CSV only change when the user asks.
+  const [colDraft, setColDraft] = useState<Record<string, ColumnOverride>>(
+    () => cloneConfig(GENERIC_CONFIG).columnOverrides,
+  );
+
+  // Re-sync the draft whenever the config's committed columns change
+  // (switching preset, saving a preset, or applying the draft itself).
+  useEffect(() => {
+    setColDraft(config.columnOverrides);
+  }, [config.columnOverrides]);
+
+  const setColMode = useCallback((key: string, mode: ColumnMode) => {
+    setColDraft((d) => ({ ...d, [key]: { ...d[key], mode } }));
+  }, []);
+  const setColValue = useCallback((key: string, value: string) => {
+    setColDraft((d) => ({ ...d, [key]: { ...d[key], value } }));
+  }, []);
+  const toggleColRemoved = useCallback((key: string) => {
+    setColDraft((d) => ({ ...d, [key]: { ...d[key], removed: !d[key].removed } }));
+  }, []);
+
+  const columnsDirty = useMemo(
+    () => JSON.stringify(colDraft) !== JSON.stringify(config.columnOverrides),
+    [colDraft, config.columnOverrides],
+  );
+
+  // The "Update CSV" action: commit the column draft into the live config.
+  const applyColumns = useCallback(() => {
+    up({ columnOverrides: colDraft });
+  }, [colDraft, up]);
+
+  const resetColumns = useCallback(() => {
+    setColDraft(config.columnOverrides);
+  }, [config.columnOverrides]);
 
   const selectPreset = useCallback(
     (id: string) => {
@@ -644,10 +683,108 @@ export default function Page() {
                     </div>
 
                     <p className="hint" style={{ marginTop: 0 }}>
-                      Adjust any setting below — the preview and download update
-                      instantly. Save your choices as a company preset so you
-                      never edit these again.
+                      For each column pick <strong>Extracted</strong>, a{" "}
+                      <strong>Custom</strong> value, or <strong>Blank</strong> —
+                      or remove the column entirely — then press{" "}
+                      <strong>Update CSV</strong>. Save it all as a company
+                      preset so you never redo this.
                     </p>
+
+                    {/* ── Per-column editor (the simple, primary control) ── */}
+                    <div className="col-editor">
+                      <div className="col-row col-head">
+                        <span>Column</span>
+                        <span>Output</span>
+                        <span>Custom value</span>
+                        <span>Drop</span>
+                      </div>
+                      {COLUMNS.map((c) => {
+                        const o = colDraft[c.key];
+                        if (!o) return null;
+                        const sample = rows[0]?.[c.key] ?? "";
+                        return (
+                          <div
+                            className={`col-row${o.removed ? " removed" : ""}`}
+                            key={c.key}
+                          >
+                            <span className="col-name">
+                              {c.label}
+                              {sample &&
+                                o.mode === "extracted" &&
+                                !o.removed && (
+                                  <span className="col-sample">
+                                    e.g. {sample}
+                                  </span>
+                                )}
+                            </span>
+                            <select
+                              value={o.mode}
+                              disabled={o.removed}
+                              onChange={(e) =>
+                                setColMode(c.key, e.target.value as ColumnMode)
+                              }
+                            >
+                              <option value="extracted">Extracted</option>
+                              <option value="custom">Custom…</option>
+                              <option value="blank">Blank</option>
+                            </select>
+                            <input
+                              type="text"
+                              value={o.value}
+                              disabled={o.removed || o.mode !== "custom"}
+                              onChange={(e) => setColValue(c.key, e.target.value)}
+                              placeholder={
+                                o.mode === "custom" ? "type value…" : "—"
+                              }
+                            />
+                            <label
+                              className="col-remove"
+                              title="Drop this column from the CSV"
+                            >
+                              <input
+                                type="checkbox"
+                                checked={o.removed}
+                                onChange={() => toggleColRemoved(c.key)}
+                              />
+                            </label>
+                          </div>
+                        );
+                      })}
+                    </div>
+
+                    <div className="col-actions">
+                      <motion.button
+                        className="btn btn-primary btn-sm"
+                        onClick={applyColumns}
+                        disabled={!columnsDirty}
+                        whileHover={columnsDirty ? { scale: 1.03 } : {}}
+                        whileTap={columnsDirty ? { scale: 0.97 } : {}}
+                      >
+                        Update CSV{columnsDirty ? " •" : ""}
+                      </motion.button>
+                      <button
+                        className="btn btn-ghost btn-sm"
+                        onClick={resetColumns}
+                        disabled={!columnsDirty}
+                      >
+                        Discard changes
+                      </button>
+                      {columnsDirty && (
+                        <span className="col-dirty-note">
+                          Unsaved column changes — press Update CSV to apply.
+                        </span>
+                      )}
+                    </div>
+
+                    {/* ── Advanced extraction settings (collapsible) ── */}
+                    <details className="advanced">
+                      <summary>Advanced extraction settings</summary>
+
+                      <p className="hint" style={{ marginTop: 12 }}>
+                        These control how the <em>Extracted</em> value is derived
+                        from the PDF for this company. Most users never need
+                        these.
+                      </p>
 
                     <div className="cfg-grid">
                       <Field label="Style / PO source">
@@ -753,20 +890,11 @@ export default function Page() {
                           type="text"
                           value={config.workTypeValue}
                           onChange={(e) => up({ workTypeValue: e.target.value })}
-                          disabled={!config.includeWorkType}
                         />
                       </Field>
                     </div>
 
                     <div className="cfg-toggles">
-                      <label className="cfg-check">
-                        <input
-                          type="checkbox"
-                          checked={config.includeWorkType}
-                          onChange={(e) => up({ includeWorkType: e.target.checked })}
-                        />
-                        Include Work-Type column
-                      </label>
                       <label className="cfg-check">
                         <input
                           type="checkbox"
@@ -823,6 +951,7 @@ export default function Page() {
                         </button>
                       </div>
                     </div>
+                    </details>
 
                     {/* Save / delete preset */}
                     <div className="cfg-save">

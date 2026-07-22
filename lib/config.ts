@@ -8,11 +8,62 @@
 // This is why different companies (which want different things from the SAME
 // kind of worksheet) no longer require editing code: pick or edit a preset.
 
+import { COLUMNS } from "./schema";
+
 export type StylePoSource = "styleCode" | "bookingNumber" | "documentPo";
 export type GsmSource = "heading" | "metadata";
 export type ColorMode = "full" | "clean";
 export type WidthMode = "asExtracted" | "normalize";
 export type SpecialMode = "asExtracted" | "blank" | "fixed";
+
+// ── Per-column override (the simple, primary control) ──────────
+// For every output column the user picks ONE of three things:
+//   "extracted" → keep whatever the transform produced from the PDF
+//   "custom"    → write a fixed value (the same text on every row)
+//   "blank"     → leave the column empty
+// …and can additionally REMOVE the column from the CSV entirely.
+export type ColumnMode = "extracted" | "custom" | "blank";
+
+export interface ColumnOverride {
+  mode: ColumnMode;
+  /** The fixed value written on every row when mode === "custom". */
+  value: string;
+  /** When true the column is dropped from the output CSV entirely. */
+  removed: boolean;
+}
+
+/** Build a full, default override map (every column kept & as-extracted). */
+export function makeDefaultOverrides(
+  includeWorkType = true,
+): Record<string, ColumnOverride> {
+  const out: Record<string, ColumnOverride> = {};
+  for (const c of COLUMNS) {
+    out[c.key] = {
+      mode: "extracted",
+      value: "",
+      removed: c.key === "workType" ? !includeWorkType : false,
+    };
+  }
+  return out;
+}
+
+/** Fill in any missing/updated column overrides so a config is always complete
+ *  (handles presets and older saved configs that predate this field). */
+function ensureOverrides(cfg: CompanyConfig): Record<string, ColumnOverride> {
+  const out = makeDefaultOverrides(cfg.includeWorkType);
+  const src = cfg.columnOverrides ?? {};
+  for (const c of COLUMNS) {
+    const s = src[c.key];
+    if (s) {
+      out[c.key] = {
+        mode: s.mode ?? "extracted",
+        value: s.value ?? "",
+        removed: !!s.removed,
+      };
+    }
+  }
+  return out;
+}
 
 export interface CompanyConfig {
   /** Stable id (used as localStorage / selection key). */
@@ -55,6 +106,10 @@ export interface CompanyConfig {
   workTypeValue: string;
   /** Fallback unit price used when the PDF had none. Empty = leave blank. */
   defaultUnitPrice: string;
+
+  // ── Per-column overrides (the simple, primary control) ──────
+  /** Keyed by column key: extracted / custom / blank + removed flag. */
+  columnOverrides: Record<string, ColumnOverride>;
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -79,6 +134,7 @@ export const GENERIC_CONFIG: CompanyConfig = {
   backorderType: "Order Now",
   workTypeValue: "Full Order",
   defaultUnitPrice: "",
+  columnOverrides: makeDefaultOverrides(true),
 };
 
 /** CZ Dia: per-booking style code + GSM, clean colors, blank instruction,
@@ -111,6 +167,7 @@ export const CZ_DIA_CONFIG: CompanyConfig = {
   backorderType: "Order Now",
   workTypeValue: "Full Order",
   defaultUnitPrice: "2.10",
+  columnOverrides: makeDefaultOverrides(false),
 };
 
 /** Ripon Knitwear: document PO (strip suffix), full Pantone colors,
@@ -136,6 +193,7 @@ export const RIPON_CONFIG: CompanyConfig = {
   backorderType: "Order Now",
   workTypeValue: "Full Order",
   defaultUnitPrice: "",
+  columnOverrides: makeDefaultOverrides(true),
 };
 
 export const BUILTIN_CONFIGS: CompanyConfig[] = [
@@ -144,11 +202,13 @@ export const BUILTIN_CONFIGS: CompanyConfig[] = [
   RIPON_CONFIG,
 ];
 
-/** Deep-clone a config (so edits don't mutate a shared preset object). */
+/** Deep-clone a config (so edits don't mutate a shared preset object).
+ *  Also normalizes columnOverrides so every config is always complete. */
 export function cloneConfig(cfg: CompanyConfig): CompanyConfig {
   return {
     ...cfg,
     fabricNameMap: { ...cfg.fabricNameMap },
     itemCodeMap: { ...cfg.itemCodeMap },
+    columnOverrides: ensureOverrides(cfg),
   };
 }
