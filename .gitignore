@@ -21,11 +21,12 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 
-# OS / editor
+# OS / editor / tooling
 .DS_Store
 Thumbs.db
 .idea
 .vscode
+.claude
 
 # Sample / working data files (not part of the app)
 *.pdf
