@@ -310,6 +310,11 @@ export default function Page() {
       return next;
     });
   }, []);
+  // Which distinct value is currently selected in each column's rename dropdown.
+  const [remapPick, setRemapPick] = useState<Record<string, string>>({});
+  const pickRemap = useCallback((key: string, value: string) => {
+    setRemapPick((m) => ({ ...m, [key]: value }));
+  }, []);
 
   const columnsDirty = useMemo(
     () => JSON.stringify(colDraft) !== JSON.stringify(config.columnOverrides),
@@ -752,10 +757,12 @@ export default function Page() {
                     <p className="hint" style={{ marginTop: 0 }}>
                       For each column pick <strong>Extracted</strong>, a{" "}
                       <strong>Custom</strong> value, or <strong>Blank</strong> —
-                      or remove the column entirely. Click{" "}
-                      <strong>N values</strong> to rename one specific value
-                      (e.g. only <em>Rib</em> → <em>2×2 Lycra</em>). Then press{" "}
-                      <strong>Update CSV</strong> and save it as a preset.
+                      or remove the column entirely. In{" "}
+                      <strong>Extracted</strong> mode, click{" "}
+                      <strong>Rename a value</strong> to pick one value and
+                      change only it (e.g. only <em>Rib</em> →{" "}
+                      <em>2×2 Lycra</em>). Then press <strong>Update CSV</strong>{" "}
+                      and save it as a preset.
                     </p>
 
                     {/* ── Per-column editor (the simple, primary control) ── */}
@@ -795,7 +802,7 @@ export default function Page() {
                                     >
                                       {mapCount > 0
                                         ? `${mapCount} renamed`
-                                        : `${distinct.length} values`}
+                                        : "Rename a value"}
                                     </button>
                                   )}
                                 </span>
@@ -841,33 +848,71 @@ export default function Page() {
                               </label>
                             </div>
 
-                            {canRemap && open && (
-                              <div className="col-values">
-                                <p className="col-values-hint">
-                                  Rename any single value below — every row with
-                                  that value changes, the rest stay.
-                                </p>
-                                {distinct.map((v) => (
-                                  <div className="col-value-row" key={v}>
-                                    <span
-                                      className="col-value-from"
-                                      title={v || "(blank)"}
+                            {canRemap && open && (() => {
+                              const picked = remapPick[c.key] ?? distinct[0] ?? "";
+                              return (
+                                <div className="col-values">
+                                  <p className="col-values-hint">
+                                    Pick the {c.label.toLowerCase()} you want to
+                                    change, type its new value, then press Update
+                                    CSV. Only that value changes.
+                                  </p>
+                                  <div className="col-remap">
+                                    <select
+                                      value={picked}
+                                      onChange={(e) =>
+                                        pickRemap(c.key, e.target.value)
+                                      }
                                     >
-                                      {v || "(blank)"}
-                                    </span>
+                                      {distinct.map((v) => (
+                                        <option key={v} value={v}>
+                                          {(v || "(blank)") +
+                                            (o.valueMap[v]
+                                              ? ` → ${o.valueMap[v]}`
+                                              : "")}
+                                        </option>
+                                      ))}
+                                    </select>
                                     <span className="col-value-arrow">→</span>
                                     <input
                                       type="text"
-                                      value={o.valueMap[v] ?? ""}
-                                      placeholder={`keep “${v}”`}
+                                      value={o.valueMap[picked] ?? ""}
+                                      placeholder={`keep “${picked}”`}
                                       onChange={(e) =>
-                                        setColValueMap(c.key, v, e.target.value)
+                                        setColValueMap(
+                                          c.key,
+                                          picked,
+                                          e.target.value,
+                                        )
                                       }
                                     />
                                   </div>
-                                ))}
-                              </div>
-                            )}
+                                  {mapCount > 0 && (
+                                    <div className="col-remap-list">
+                                      {Object.entries(o.valueMap).map(
+                                        ([from, to]) => (
+                                          <span
+                                            className="col-remap-chip"
+                                            key={from}
+                                          >
+                                            {(from || "(blank)") + " → " + to}
+                                            <button
+                                              type="button"
+                                              onClick={() =>
+                                                setColValueMap(c.key, from, "")
+                                              }
+                                              title="Remove this rename"
+                                            >
+                                              ×
+                                            </button>
+                                          </span>
+                                        ),
+                                      )}
+                                    </div>
+                                  )}
+                                </div>
+                              );
+                            })()}
                           </Fragment>
                         );
                       })}
