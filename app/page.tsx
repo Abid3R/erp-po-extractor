@@ -1,10 +1,10 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { RawLineItem, ExtractedRow, COLUMNS } from "@/lib/schema";
 import { generateCsv } from "@/lib/csv";
-import { applyConfig, activeColumns } from "@/lib/transform";
+import { applyConfig, activeColumns, baselineRows } from "@/lib/transform";
 import {
   CompanyConfig,
   ColumnMode,
@@ -248,6 +248,19 @@ export default function Page() {
   const editCount = Object.keys(cellEdits).length;
   const clearCellEdits = useCallback(() => setCellEdits({}), []);
 
+  // Distinct EXTRACTED value(s) per column (before overrides) — the list the
+  // per-value remap editor shows, so "Rib" can be renamed wherever it appears.
+  const distinctByColumn = useMemo(() => {
+    const src = items ? baselineRows(items, config) : [];
+    const map: Record<string, string[]> = {};
+    for (const c of COLUMNS) {
+      const seen = new Set<string>();
+      for (const r of src) seen.add(r[c.key] ?? "");
+      map[c.key] = Array.from(seen);
+    }
+    return map;
+  }, [items, config]);
+
   const up = useCallback((patch: Partial<CompanyConfig>) => {
     setConfig((c) => ({ ...c, ...patch }));
   }, []);
@@ -273,6 +286,29 @@ export default function Page() {
   }, []);
   const toggleColRemoved = useCallback((key: string) => {
     setColDraft((d) => ({ ...d, [key]: { ...d[key], removed: !d[key].removed } }));
+  }, []);
+  // Per-value remap: set the replacement for one distinct extracted value.
+  const setColValueMap = useCallback(
+    (key: string, rawValue: string, replacement: string) => {
+      setColDraft((d) => {
+        const nextMap = { ...d[key].valueMap };
+        if (replacement.trim() === "") delete nextMap[rawValue];
+        else nextMap[rawValue] = replacement;
+        return { ...d, [key]: { ...d[key], valueMap: nextMap } };
+      });
+    },
+    [],
+  );
+
+  // Which columns have their per-value editor expanded.
+  const [openValues, setOpenValues] = useState<Set<string>>(new Set());
+  const toggleValuesOpen = useCallback((key: string) => {
+    setOpenValues((s) => {
+      const next = new Set(s);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
   }, []);
 
   const columnsDirty = useMemo(
@@ -716,9 +752,10 @@ export default function Page() {
                     <p className="hint" style={{ marginTop: 0 }}>
                       For each column pick <strong>Extracted</strong>, a{" "}
                       <strong>Custom</strong> value, or <strong>Blank</strong> —
-                      or remove the column entirely — then press{" "}
-                      <strong>Update CSV</strong>. Save it all as a company
-                      preset so you never redo this.
+                      or remove the column entirely. Click{" "}
+                      <strong>N values</strong> to rename one specific value
+                      (e.g. only <em>Rib</em> → <em>2×2 Lycra</em>). Then press{" "}
+                      <strong>Update CSV</strong> and save it as a preset.
                     </p>
 
                     {/* ── Per-column editor (the simple, primary control) ── */}
@@ -732,53 +769,106 @@ export default function Page() {
                       {COLUMNS.map((c) => {
                         const o = colDraft[c.key];
                         if (!o) return null;
-                        const sample = baseRows[0]?.[c.key] ?? "";
+                        const distinct = distinctByColumn[c.key] ?? [];
+                        const sample = distinct[0] ?? "";
+                        const canRemap =
+                          o.mode === "extracted" &&
+                          !o.removed &&
+                          distinct.length >= 2;
+                        const mapCount = Object.keys(o.valueMap).length;
+                        const open = openValues.has(c.key);
                         return (
-                          <div
-                            className={`col-row${o.removed ? " removed" : ""}`}
-                            key={c.key}
-                          >
-                            <span className="col-name">
-                              {c.label}
-                              {sample &&
-                                o.mode === "extracted" &&
-                                !o.removed && (
-                                  <span className="col-sample">
-                                    e.g. {sample}
-                                  </span>
-                                )}
-                            </span>
-                            <select
-                              value={o.mode}
-                              disabled={o.removed}
-                              onChange={(e) =>
-                                setColMode(c.key, e.target.value as ColumnMode)
-                              }
+                          <Fragment key={c.key}>
+                            <div
+                              className={`col-row${o.removed ? " removed" : ""}`}
                             >
-                              <option value="extracted">Extracted</option>
-                              <option value="custom">Custom…</option>
-                              <option value="blank">Blank</option>
-                            </select>
-                            <input
-                              type="text"
-                              value={o.value}
-                              disabled={o.removed || o.mode !== "custom"}
-                              onChange={(e) => setColValue(c.key, e.target.value)}
-                              placeholder={
-                                o.mode === "custom" ? "type value…" : "—"
-                              }
-                            />
-                            <label
-                              className="col-remove"
-                              title="Drop this column from the CSV"
-                            >
+                              <span className="col-name">
+                                <span className="col-name-line">
+                                  {c.label}
+                                  {canRemap && (
+                                    <button
+                                      type="button"
+                                      className={`col-values-toggle${
+                                        open ? " open" : ""
+                                      }`}
+                                      onClick={() => toggleValuesOpen(c.key)}
+                                    >
+                                      {mapCount > 0
+                                        ? `${mapCount} renamed`
+                                        : `${distinct.length} values`}
+                                    </button>
+                                  )}
+                                </span>
+                                {sample &&
+                                  o.mode === "extracted" &&
+                                  !o.removed && (
+                                    <span className="col-sample">
+                                      e.g. {sample}
+                                    </span>
+                                  )}
+                              </span>
+                              <select
+                                value={o.mode}
+                                disabled={o.removed}
+                                onChange={(e) =>
+                                  setColMode(c.key, e.target.value as ColumnMode)
+                                }
+                              >
+                                <option value="extracted">Extracted</option>
+                                <option value="custom">Custom…</option>
+                                <option value="blank">Blank</option>
+                              </select>
                               <input
-                                type="checkbox"
-                                checked={o.removed}
-                                onChange={() => toggleColRemoved(c.key)}
+                                type="text"
+                                value={o.value}
+                                disabled={o.removed || o.mode !== "custom"}
+                                onChange={(e) =>
+                                  setColValue(c.key, e.target.value)
+                                }
+                                placeholder={
+                                  o.mode === "custom" ? "type value…" : "—"
+                                }
                               />
-                            </label>
-                          </div>
+                              <label
+                                className="col-remove"
+                                title="Drop this column from the CSV"
+                              >
+                                <input
+                                  type="checkbox"
+                                  checked={o.removed}
+                                  onChange={() => toggleColRemoved(c.key)}
+                                />
+                              </label>
+                            </div>
+
+                            {canRemap && open && (
+                              <div className="col-values">
+                                <p className="col-values-hint">
+                                  Rename any single value below — every row with
+                                  that value changes, the rest stay.
+                                </p>
+                                {distinct.map((v) => (
+                                  <div className="col-value-row" key={v}>
+                                    <span
+                                      className="col-value-from"
+                                      title={v || "(blank)"}
+                                    >
+                                      {v || "(blank)"}
+                                    </span>
+                                    <span className="col-value-arrow">→</span>
+                                    <input
+                                      type="text"
+                                      value={o.valueMap[v] ?? ""}
+                                      placeholder={`keep “${v}”`}
+                                      onChange={(e) =>
+                                        setColValueMap(c.key, v, e.target.value)
+                                      }
+                                    />
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </Fragment>
                         );
                       })}
                     </div>

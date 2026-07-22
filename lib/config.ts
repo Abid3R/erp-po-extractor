@@ -30,6 +30,10 @@ export interface ColumnOverride {
   value: string;
   /** When true the column is dropped from the output CSV entirely. */
   removed: boolean;
+  /** Per-value remap applied in "extracted" mode: extracted value → replacement.
+   *  Lets one distinct value (e.g. "Rib") be changed everywhere it appears
+   *  without touching the column's other values. Empty replacement = keep. */
+  valueMap: Record<string, string>;
 }
 
 /** Build a full, default override map (every column kept & as-extracted). */
@@ -42,6 +46,7 @@ export function makeDefaultOverrides(
       mode: "extracted",
       value: "",
       removed: c.key === "workType" ? !includeWorkType : false,
+      valueMap: {},
     };
   }
   return out;
@@ -59,6 +64,7 @@ function ensureOverrides(cfg: CompanyConfig): Record<string, ColumnOverride> {
         mode: s.mode ?? "extracted",
         value: s.value ?? "",
         removed: !!s.removed,
+        valueMap: { ...(s.valueMap ?? {}) },
       };
     }
   }

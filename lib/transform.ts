@@ -52,12 +52,10 @@ export function activeColumns(cfg: CompanyConfig): ColumnDef[] {
   });
 }
 
-/** Apply a company config to the neutral raw items to produce final rows. */
-export function applyConfig(
-  items: RawLineItem[],
-  cfg: CompanyConfig,
-): ExtractedRow[] {
-  return items.map((item) => {
+/** Compute the extracted baseline for one item (preset smarts applied, but NOT
+ *  the per-column override layer). This is the value the per-value remap and the
+ *  column editor treat as "Extracted". */
+function baselineRow(item: RawLineItem, cfg: CompanyConfig): ExtractedRow {
     const key = item.fabricName.toLowerCase().trim();
 
     // Fabric name & item code (config lookups take precedence over PDF values).
@@ -107,8 +105,7 @@ export function applyConfig(
 
     const unitPrice = item.unitPrice || cfg.defaultUnitPrice;
 
-    // 1) The extracted baseline (preset smarts applied).
-    const baseline: ExtractedRow = {
+    return {
       itemName: fabricName,
       itemCode,
       stylePo,
@@ -126,15 +123,39 @@ export function applyConfig(
       backorderType: cfg.backorderType,
       workType: cfg.workTypeValue,
     };
+}
 
-    // 2) Apply the simple per-column override (custom text / blank / extracted).
-    const ov = cfg.columnOverrides ?? {};
+/** The extracted baseline rows (before the per-column override layer). Used by
+ *  the UI to list each column's distinct values for per-value remapping. */
+export function baselineRows(
+  items: RawLineItem[],
+  cfg: CompanyConfig,
+): ExtractedRow[] {
+  return items.map((item) => baselineRow(item, cfg));
+}
+
+/** Apply a company config to the neutral raw items to produce final rows.
+ *  Order per column: extracted baseline → per-value remap → custom / blank. */
+export function applyConfig(
+  items: RawLineItem[],
+  cfg: CompanyConfig,
+): ExtractedRow[] {
+  const ov = cfg.columnOverrides ?? {};
+  return items.map((item) => {
+    const baseline = baselineRow(item, cfg);
     const row = { ...baseline } as ExtractedRow;
     for (const c of COLUMNS) {
       const o = ov[c.key];
       if (!o) continue;
-      if (o.mode === "blank") row[c.key] = "";
-      else if (o.mode === "custom") row[c.key] = o.value;
+      if (o.mode === "blank") {
+        row[c.key] = "";
+      } else if (o.mode === "custom") {
+        row[c.key] = o.value;
+      } else {
+        // Extracted mode: remap this specific value if the user renamed it.
+        const mapped = o.valueMap?.[baseline[c.key]];
+        if (mapped) row[c.key] = mapped;
+      }
     }
     return row;
   });
