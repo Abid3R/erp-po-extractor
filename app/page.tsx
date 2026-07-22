@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { RawLineItem, COLUMNS } from "@/lib/schema";
+import { RawLineItem, ExtractedRow, COLUMNS } from "@/lib/schema";
 import { generateCsv } from "@/lib/csv";
 import { applyConfig, activeColumns } from "@/lib/transform";
 import {
@@ -216,12 +216,37 @@ export default function Page() {
     [customConfigs],
   );
 
-  // Live "Redo": recompute final rows + columns whenever items or config change.
+  // Per-cell manual edits, keyed by `${rowIndex}:${columnKey}`. These are
+  // specific to the CURRENT document (not saved into a company preset) so the
+  // user can fix any individual value — e.g. one Item Name among many.
+  const [cellEdits, setCellEdits] = useState<Record<string, string>>({});
+
+  // Live "Redo": recompute columns + the config-derived rows whenever items or
+  // config change. `rows` then overlays any per-cell manual edits on top.
   const columns = useMemo(() => activeColumns(config), [config]);
-  const rows = useMemo(
+  const baseRows = useMemo(
     () => (items ? applyConfig(items, config) : []),
     [items, config],
   );
+  const rows = useMemo(() => {
+    return baseRows.map((r, i) => {
+      let copy: ExtractedRow | null = null;
+      for (const c of COLUMNS) {
+        const k = `${i}:${c.key}`;
+        if (k in cellEdits) {
+          if (!copy) copy = { ...r };
+          copy[c.key] = cellEdits[k];
+        }
+      }
+      return copy ?? r;
+    });
+  }, [baseRows, cellEdits]);
+
+  const setCell = useCallback((rowIndex: number, key: string, value: string) => {
+    setCellEdits((m) => ({ ...m, [`${rowIndex}:${key}`]: value }));
+  }, []);
+  const editCount = Object.keys(cellEdits).length;
+  const clearCellEdits = useCallback(() => setCellEdits({}), []);
 
   const up = useCallback((patch: Partial<CompanyConfig>) => {
     setConfig((c) => ({ ...c, ...patch }));
@@ -301,6 +326,7 @@ export default function Page() {
     if (!file) return;
     setStatus({ kind: "loading" });
     setItems(null);
+    setCellEdits({});
     try {
       const body = new FormData();
       body.append("file", file);
@@ -339,28 +365,32 @@ export default function Page() {
     }
   }, [file, config]);
 
+  const saveCsv = useCallback((csv: string, filename: string) => {
+    const blob = new Blob(["﻿" + csv], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename.replace(/\.pdf$/i, "") + ".csv";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }, []);
+
+  // History downloads regenerate from raw items (no per-cell edits apply — those
+  // belong to the live document currently open).
   const downloadWith = useCallback(
     (srcItems: RawLineItem[], cfg: CompanyConfig, filename: string) => {
-      const csv = generateCsv(applyConfig(srcItems, cfg), activeColumns(cfg));
-      const blob = new Blob(["﻿" + csv], {
-        type: "text/csv;charset=utf-8;",
-      });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = filename.replace(/\.pdf$/i, "") + ".csv";
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
+      saveCsv(generateCsv(applyConfig(srcItems, cfg), activeColumns(cfg)), filename);
     },
-    [],
+    [saveCsv],
   );
 
+  // Main download uses the overlaid rows so manual cell edits are included.
   const download = useCallback(() => {
     if (!items || !file) return;
-    downloadWith(items, config, file.name);
-  }, [items, file, config, downloadWith]);
+    saveCsv(generateCsv(rows, columns), file.name);
+  }, [items, file, rows, columns, saveCsv]);
 
   const savePreset = useCallback(() => {
     const name = presetName.trim();
@@ -393,6 +423,7 @@ export default function Page() {
   const reset = useCallback(() => {
     setFile(null);
     setItems(null);
+    setCellEdits({});
     setStatus({ kind: "idle" });
     if (inputRef.current) inputRef.current.value = "";
   }, []);
@@ -701,7 +732,7 @@ export default function Page() {
                       {COLUMNS.map((c) => {
                         const o = colDraft[c.key];
                         if (!o) return null;
-                        const sample = rows[0]?.[c.key] ?? "";
+                        const sample = baseRows[0]?.[c.key] ?? "";
                         return (
                           <div
                             className={`col-row${o.removed ? " removed" : ""}`}
@@ -996,18 +1027,33 @@ export default function Page() {
                         Preview{" "}
                         <span className="muted">
                           ({rows.length} row{rows.length === 1 ? "" : "s"} ·{" "}
-                          {config.name})
+                          {config.name}
+                          {editCount > 0
+                            ? ` · ${editCount} edit${editCount === 1 ? "" : "s"}`
+                            : ""}
+                          )
                         </span>
                       </span>
-                      <motion.button
-                        className="btn btn-primary btn-sm"
-                        onClick={download}
-                        whileHover={{ scale: 1.04 }}
-                        whileTap={{ scale: 0.96 }}
-                      >
-                        <IconDownload />
-                        Download CSV
-                      </motion.button>
+                      <div className="preview-actions">
+                        {editCount > 0 && (
+                          <button
+                            className="btn btn-ghost btn-sm"
+                            onClick={clearCellEdits}
+                            title="Revert all manual cell edits"
+                          >
+                            Clear edits
+                          </button>
+                        )}
+                        <motion.button
+                          className="btn btn-primary btn-sm"
+                          onClick={download}
+                          whileHover={{ scale: 1.04 }}
+                          whileTap={{ scale: 0.96 }}
+                        >
+                          <IconDownload />
+                          Download CSV
+                        </motion.button>
+                      </div>
                     </div>
 
                     <div className="table-scroll">
@@ -1028,10 +1074,22 @@ export default function Page() {
                           {rows.map((row, i) => (
                             <tr key={i}>
                               {columns.map((c) => {
+                                const k = `${i}:${c.key}`;
+                                const edited = k in cellEdits;
                                 const value = row[c.key] ?? "";
                                 return (
-                                  <td key={c.key} className={value ? undefined : "empty"}>
-                                    {value || "—"}
+                                  <td
+                                    key={c.key}
+                                    className={`cell${edited ? " edited" : ""}`}
+                                  >
+                                    <input
+                                      className="cell-input"
+                                      value={value}
+                                      spellCheck={false}
+                                      onChange={(e) =>
+                                        setCell(i, c.key, e.target.value)
+                                      }
+                                    />
                                   </td>
                                 );
                               })}
@@ -1042,8 +1100,9 @@ export default function Page() {
                     </div>
 
                     <p className="hint">
-                      Row 1 = human-readable labels · Row 2 = ERP field codes
-                      (written to CSV header)
+                      Row 1 = labels · Row 2 = ERP field codes. Every cell is
+                      editable — click any value to change just that row. Column
+                      controls above set the defaults; individual edits win.
                     </p>
                   </motion.div>
                 )}

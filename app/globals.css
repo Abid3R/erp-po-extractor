@@ -411,6 +411,48 @@ td.empty {
   color: #3a4d66;
 }
 
+/* ─── Editable preview cells ─────────────────────────────────────────────── */
+
+tbody td.cell {
+  padding: 0;
+}
+
+.cell-input {
+  width: 100%;
+  min-width: 90px;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--text);
+  font-size: 12px;
+  padding: 7px 11px;
+  font-family: inherit;
+  border-radius: 0;
+}
+
+.cell-input:hover {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.cell-input:focus {
+  background: var(--accent-dim);
+  box-shadow: inset 0 0 0 1.5px var(--accent);
+}
+
+tbody td.cell.edited {
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+tbody td.cell.edited .cell-input {
+  color: #bcd4ff;
+}
+
+.preview-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .hint {
   color: var(--muted);
   font-size: 12px;
