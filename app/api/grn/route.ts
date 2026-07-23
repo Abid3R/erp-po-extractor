@@ -134,6 +134,34 @@ function parseNum(s: string): number {
   return isNaN(n) ? 0 : n;
 }
 
+/** Strip markdown fences the model sometimes wraps JSON in. */
+function stripFences(text: string): string {
+  return text
+    .trim()
+    .replace(/^```(?:json)?\s*/i, "")
+    .replace(/\s*```$/i, "")
+    .trim();
+}
+
+/** Best-effort recovery of complete roll objects from (possibly truncated) text.
+ *  The schema fixes the field order (gsm, batch, width, weight), so every fully
+ *  written roll matches this pattern even if the JSON array was cut off. */
+function salvageRolls(text: string): GrnRoll[] {
+  const re =
+    /\{\s*"gsm"\s*:\s*"([^"]*)"\s*,\s*"batch"\s*:\s*"([^"]*)"\s*,\s*"width"\s*:\s*"([^"]*)"\s*,\s*"weight"\s*:\s*"([^"]*)"\s*\}/g;
+  const rolls: GrnRoll[] = [];
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) {
+    rolls.push({ gsm: m[1], batch: m[2], width: m[3], weight: m[4] });
+  }
+  return rolls;
+}
+
+function grabField(text: string, field: string): string {
+  const m = text.match(new RegExp(`"${field}"\\s*:\\s*"([^"]*)"`));
+  return m ? m[1] : "";
+}
+
 function buildWarnings(doc: Grn): string[] {
   const warnings: string[] = [];
   const official = parseNum(doc.officialRolls);
@@ -208,35 +236,59 @@ export async function POST(request: Request): Promise<Response> {
           temperature: 0,
           responseMimeType: "application/json",
           responseSchema,
+          // GRNs can contain hundreds of rolls — give the answer the full output
+          // budget and skip "thinking" tokens so the JSON never gets truncated.
+          maxOutputTokens: 65536,
+          thinkingConfig: { thinkingBudget: 0 },
         },
       }),
     );
 
     const text = response.text;
+    const finishReason = response.candidates?.[0]?.finishReason;
     if (!text) return jsonError("Model returned no extractable content.", 502);
 
-    let rawResult: unknown;
-    try {
-      rawResult = JSON.parse(text);
-    } catch {
-      return jsonError("Model output was not valid JSON.", 502);
-    }
+    const cleaned = stripFences(text);
 
-    const validated = ZGrn.safeParse(rawResult);
-    if (!validated.success) {
-      return jsonError(
-        `Model output did not match expected schema: ${validated.error.message}`,
-        502,
+    // Fast path: well-formed JSON that matches the schema.
+    const parsed = (() => {
+      try {
+        return ZGrn.safeParse(JSON.parse(cleaned));
+      } catch {
+        return null;
+      }
+    })();
+
+    if (parsed && parsed.success) {
+      const warnings = buildWarnings(parsed.data);
+      return new Response(
+        JSON.stringify({ rolls: parsed.data.rolls, warnings }),
+        { status: 200, headers: { "content-type": "application/json" } },
       );
     }
 
-    const rolls: GrnRoll[] = validated.data.rolls;
-    const warnings = buildWarnings(validated.data);
+    // Fallback: the JSON was truncated (or lightly malformed). Recover every
+    // complete roll object so a large GRN still yields usable output.
+    const salvaged = salvageRolls(cleaned);
+    if (salvaged.length > 0) {
+      const doc: Grn = {
+        officialRolls: grabField(cleaned, "officialRolls"),
+        officialKgs: grabField(cleaned, "officialKgs"),
+        rolls: salvaged,
+      };
+      const warnings = buildWarnings(doc);
+      if (finishReason === "MAX_TOKENS") {
+        warnings.unshift(
+          `The GRN was large and the response was truncated — recovered ${salvaged.length} rolls. Please verify the last rows against the PDF.`,
+        );
+      }
+      return new Response(JSON.stringify({ rolls: salvaged, warnings }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
 
-    return new Response(JSON.stringify({ rolls, warnings }), {
-      status: 200,
-      headers: { "content-type": "application/json" },
-    });
+    return jsonError("Model output was not valid JSON.", 502);
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";
     return jsonError(`Extraction failed: ${message}`, 500);
