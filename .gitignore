@@ -31,3 +31,5 @@ Thumbs.db
 # Sample / working data files (not part of the app)
 *.pdf
 *.csv
+*.xlsx
+*.xls
