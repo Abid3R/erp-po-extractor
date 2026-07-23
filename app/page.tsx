@@ -13,6 +13,7 @@ import {
   GENERIC_CONFIG,
   cloneConfig,
 } from "@/lib/config";
+import GrnView from "./components/GrnView";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -188,9 +189,9 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
   );
 }
 
-// ─── Page ────────────────────────────────────────────────────────────────────
+// ─── Order Sheet view ────────────────────────────────────────────────────────
 
-export default function Page() {
+function OrderSheetView() {
   const [file, setFile] = useState<File | null>(null);
   const [items, setItems] = useState<RawLineItem[] | null>(null);
   const [status, setStatus] = useState<Status>({ kind: "idle" });
@@ -529,49 +530,28 @@ export default function Page() {
   const isCustom = !BUILTIN_IDS.has(config.id);
 
   return (
-    <div className="page-wrapper">
-      {/* ── Navbar ── */}
-      <motion.nav
-        className="navbar"
-        initial={{ opacity: 0, y: -16 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.4 }}
-      >
-        <div className="navbar-inner">
-          <div className="brand">
-            <div className="brand-icon">
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
-                <rect width="24" height="24" rx="6" fill="#3b82f6" />
-                <path
-                  d="M5 8h14M5 12h9M5 16h11"
-                  stroke="white"
-                  strokeWidth="1.8"
-                  strokeLinecap="round"
-                />
-              </svg>
-            </div>
-            <span className="brand-name">PO Extractor</span>
-          </div>
-          <div className="nav-tabs">
-            <button
-              className={`nav-tab${activeTab === "upload" ? " active" : ""}`}
-              onClick={() => setActiveTab("upload")}
-            >
-              Upload
-            </button>
-            <button
-              className={`nav-tab${activeTab === "history" ? " active" : ""}`}
-              onClick={() => setActiveTab("history")}
-            >
-              <span className="tab-icon"><IconHistory /></span>
-              History
-              {history.length > 0 && (
-                <span className="tab-badge">{history.length}</span>
-              )}
-            </button>
-          </div>
+    <>
+      {/* ── Top tab bar ── */}
+      <nav className="view-topbar">
+        <div className="nav-tabs">
+          <button
+            className={`nav-tab${activeTab === "upload" ? " active" : ""}`}
+            onClick={() => setActiveTab("upload")}
+          >
+            Upload
+          </button>
+          <button
+            className={`nav-tab${activeTab === "history" ? " active" : ""}`}
+            onClick={() => setActiveTab("history")}
+          >
+            <span className="tab-icon"><IconHistory /></span>
+            History
+            {history.length > 0 && (
+              <span className="tab-badge">{history.length}</span>
+            )}
+          </button>
         </div>
-      </motion.nav>
+      </nav>
 
       <div className="container">
         <AnimatePresence mode="wait">
@@ -1357,6 +1337,74 @@ export default function Page() {
           )}
         </AnimatePresence>
       </div>
+    </>
+  );
+}
+
+// ─── App shell: sidebar to switch between products ───────────────────────────
+
+type Product = "order" | "grn";
+
+export default function Page() {
+  const [product, setProduct] = useState<Product>("order");
+
+  return (
+    <div className="shell">
+      <aside className="sidebar">
+        <div className="sidebar-brand">
+          <div className="brand-icon">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+              <path
+                d="M5 8h14M5 12h9M5 16h11"
+                stroke="white"
+                strokeWidth="1.8"
+                strokeLinecap="round"
+              />
+            </svg>
+          </div>
+          <span className="brand-name">ERP Extractor</span>
+        </div>
+
+        <nav className="sidebar-nav">
+          <span className="sidebar-label">Tools</span>
+          <button
+            className={`sidebar-item${product === "order" ? " active" : ""}`}
+            onClick={() => setProduct("order")}
+          >
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+              <path
+                d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6z"
+                stroke="currentColor"
+                strokeWidth="1.6"
+                strokeLinejoin="round"
+              />
+              <path d="M14 2v6h6M8 13h8M8 17h5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+            </svg>
+            <span>Order Sheet</span>
+          </button>
+          <button
+            className={`sidebar-item${product === "grn" ? " active" : ""}`}
+            onClick={() => setProduct("grn")}
+          >
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+              <path
+                d="M12 2 3 7v10l9 5 9-5V7l-9-5Z"
+                stroke="currentColor"
+                strokeWidth="1.6"
+                strokeLinejoin="round"
+              />
+              <path d="M3 7l9 5 9-5M12 12v10" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" />
+            </svg>
+            <span>GRN</span>
+          </button>
+        </nav>
+
+        <div className="sidebar-foot">PDF → ERP CSV</div>
+      </aside>
+
+      <main className="shell-main">
+        {product === "order" ? <OrderSheetView /> : <GrnView />}
+      </main>
     </div>
   );
 }

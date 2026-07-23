@@ -54,9 +54,8 @@ body {
   background: var(--bg);
   background-image:
     radial-gradient(900px 500px at 15% -8%, rgba(59, 130, 246, 0.14), transparent 60%),
-    radial-gradient(800px 460px at 100% 0%, rgba(99, 102, 241, 0.12), transparent 55%),
-    radial-gradient(700px 700px at 50% 120%, rgba(59, 130, 246, 0.06), transparent 60%);
-  background-attachment: fixed;
+    radial-gradient(800px 460px at 100% 0%, rgba(99, 102, 241, 0.12), transparent 55%);
+  background-repeat: no-repeat;
   color: var(--text);
   font-family: var(--font-sans);
   font-size: 14px;
@@ -82,8 +81,113 @@ body {
 .container {
   max-width: 1100px;
   margin: 0 auto;
-  padding: 32px 24px 80px;
+  padding: 28px 32px 80px;
   width: 100%;
+}
+
+/* ─── App shell + sidebar ────────────────────────────────────────────────── */
+
+.shell {
+  display: flex;
+  min-height: 100vh;
+  align-items: stretch;
+}
+
+.sidebar {
+  position: sticky;
+  top: 0;
+  align-self: flex-start;
+  height: 100vh;
+  width: 236px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  padding: 20px 16px;
+  background: linear-gradient(180deg, #10192e, #0a1120);
+  border-right: 1px solid var(--border);
+}
+
+.sidebar-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px;
+}
+
+.sidebar-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.sidebar-label {
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--muted);
+  padding: 0 10px 6px;
+}
+
+.sidebar-item {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  font: inherit;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--text-soft);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  padding: 10px 12px;
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.sidebar-item svg { color: var(--muted); transition: color 0.15s; }
+
+.sidebar-item:hover {
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text);
+}
+.sidebar-item:hover svg { color: var(--text-soft); }
+
+.sidebar-item.active {
+  background: var(--accent-dim);
+  color: #dbe8ff;
+  border-color: rgba(59, 130, 246, 0.28);
+}
+.sidebar-item.active svg { color: var(--accent); }
+
+.sidebar-foot {
+  margin-top: auto;
+  font-size: 11px;
+  color: var(--muted);
+  padding: 0 10px;
+  letter-spacing: 0.02em;
+}
+
+.shell-main {
+  flex: 1;
+  min-width: 0;
+}
+
+/* Slim per-view top bar (holds Upload / History tabs) */
+.view-topbar {
+  position: sticky;
+  top: 0;
+  z-index: 40;
+  height: 54px;
+  display: flex;
+  align-items: center;
+  padding: 0 32px;
+  background: rgba(8, 13, 24, 0.72);
+  backdrop-filter: blur(16px) saturate(140%);
+  -webkit-backdrop-filter: blur(16px) saturate(140%);
+  border-bottom: 1px solid var(--border);
 }
 
 /* ─── Navbar ─────────────────────────────────────────────────────────────── */
@@ -457,6 +561,53 @@ body {
 .status-bar.success {
   background: var(--success-dim);
   color: var(--success);
+}
+
+.status-bar.warn {
+  background: rgba(245, 179, 66, 0.12);
+  color: #f5b342;
+  gap: 4px;
+  font-size: 12.5px;
+}
+
+/* GRN weight→qty divisor control */
+.grn-divisor {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin: 0 0 16px;
+}
+
+.grn-divisor .cfg-label {
+  margin: 0;
+}
+
+.grn-divisor select {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-size: 13px;
+  padding: 8px 11px;
+  outline: none;
+  min-width: 320px;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.grn-divisor select:focus {
+  border-color: var(--accent);
+  box-shadow: var(--ring);
+}
+
+.hero-sub code,
+.hint code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.92em;
+  background: var(--accent-dim);
+  color: #bcd4ff;
+  padding: 1px 6px;
+  border-radius: 5px;
 }
 
 /* ─── Spinner ────────────────────────────────────────────────────────────── */
@@ -1109,13 +1260,60 @@ details.advanced > summary:hover {
 
 /* ─── Responsive ─────────────────────────────────────────────────────────── */
 
+@media (max-width: 860px) {
+  .shell {
+    flex-direction: column;
+  }
+
+  .sidebar {
+    position: sticky;
+    top: 0;
+    z-index: 60;
+    width: 100%;
+    height: auto;
+    flex-direction: row;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 14px;
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .sidebar-brand {
+    padding: 0;
+  }
+
+  .sidebar-nav {
+    flex-direction: row;
+    gap: 6px;
+  }
+
+  .sidebar-label,
+  .sidebar-foot {
+    display: none;
+  }
+
+  .sidebar-item {
+    padding: 8px 12px;
+  }
+
+  .view-topbar {
+    padding: 0 16px;
+  }
+}
+
 @media (max-width: 600px) {
   .container {
     padding: 20px 16px 60px;
   }
 
   .hero-title {
-    font-size: 22px;
+    font-size: 26px;
+  }
+
+  .grn-divisor select {
+    min-width: 0;
+    width: 100%;
   }
 
   .history-item {
