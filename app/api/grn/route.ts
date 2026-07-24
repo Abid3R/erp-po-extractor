@@ -103,6 +103,12 @@ function jsonError(message: string, status: number) {
   });
 }
 
+/** Sanitize an API key from the environment: strip whitespace/newlines and any
+ *  surrounding quotes that were accidentally pasted into the dashboard value. */
+function cleanKey(raw: string): string {
+  return raw.trim().replace(/^["']+|["']+$/g, "").trim();
+}
+
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 function isTransient(err: unknown): boolean {
@@ -209,12 +215,12 @@ function buildWarnings(doc: Grn): string[] {
 export async function POST(request: Request): Promise<Response> {
   // The GRN tool uses its own key when set (GRN_GEMINI_API_KEY) so its quota is
   // separate from the order-sheet tool; it falls back to the shared key.
-  const apiKey = (
+  const apiKey = cleanKey(
     process.env.GRN_GEMINI_API_KEY ||
-    process.env.GEMINI_API_KEY ||
-    process.env.GOOGLE_API_KEY ||
-    ""
-  ).trim();
+      process.env.GEMINI_API_KEY ||
+      process.env.GOOGLE_API_KEY ||
+      "",
+  );
   if (!apiKey) {
     return jsonError(
       "Server is missing an API key. Set GRN_GEMINI_API_KEY (or GEMINI_API_KEY) in the environment.",
@@ -248,7 +254,12 @@ export async function POST(request: Request): Promise<Response> {
   try {
     const response = await withRetry(() =>
       ai.models.generateContent({
-        model: process.env.GEMINI_MODEL || "gemini-2.5-flash",
+        // "gemini-2.5-flash" is no longer offered to new accounts, so default
+        // to the current flash alias. Override per-tool with GRN_GEMINI_MODEL.
+        model:
+          process.env.GRN_GEMINI_MODEL ||
+          process.env.GEMINI_MODEL ||
+          "gemini-flash-latest",
         contents: [
           {
             role: "user",
