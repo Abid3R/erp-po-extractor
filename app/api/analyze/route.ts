@@ -486,7 +486,11 @@ function buildRawItems(doc: DocumentStructure): {
 // ─────────────────────────────────────────────────────────────
 
 export async function POST(request: Request): Promise<Response> {
-  const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
+  const apiKey = (
+    process.env.GEMINI_API_KEY ||
+    process.env.GOOGLE_API_KEY ||
+    ""
+  ).trim();
   if (!apiKey) {
     return jsonError(
       "Server is missing GEMINI_API_KEY. Set it in .env.local.",
