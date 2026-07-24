@@ -61,9 +61,11 @@ DOCUMENT LAYOUT
 ────────────────────────
 • The page header shows document totals such as "24 CONTAINERS", "536 ROLLS", "546,344 KGS".
 • Below that, containers are laid out in COLUMNS across the page (e.g. 3 containers side-by-side).
-• Each container has a small header (its container id, e.g. "BEAU4656885", and its own roll count + KGS) followed by a table whose columns are:
+• Each container has a small header showing its CONTAINER ID — a code that starts with 4 LETTERS then digits, e.g. "BEAU4656885", "BMOU6048277", "CAIU9273332" — plus that container's own roll count + KGS. This container id is the SAME for every roll inside the container: it is NOT the batch number and must NEVER be used as "batch".
+• Under the container header is a table whose columns are:
       GSM | ROLL NO. | WIDTH | WEIGHT
   (Some blocks may repeat these headers. A "MSR" or grade label may precede GSM — ignore it.)
+• The ROLL NO. column holds a long, PURELY-NUMERIC serial (about 10 digits, e.g. "4160134833") that is DIFFERENT on every row — it uniquely identifies each individual roll.
 
 ────────────────────────
 WHAT TO EXTRACT
@@ -72,7 +74,10 @@ WHAT TO EXTRACT
 • officialKgs   : The grand total KGS from the document header (e.g. "546,344"). Empty string if absent.
 • rolls         : One entry PER ROLL, for every container and page. Each entry:
       – gsm    : The GSM value for the roll (e.g. "160", "200"). Digits only as written.
-      – batch  : The ROLL NO. exactly as written (e.g. "4160134833"). This becomes "xbatch".
+      – batch  : The ROLL NO. for THIS roll — the long (~10-digit) purely-numeric serial from the ROLL NO. column, exactly as written (e.g. "4160134833"). This becomes "xbatch".
+                 ► It MUST be UNIQUE for every roll — no two rolls share the same batch.
+                 ► It is NOT the container id (BEAU…, BMOU…, letters+digits).
+                 ► It is NOT the GSM, WIDTH, or WEIGHT. Read the digits carefully.
       – width  : The WIDTH exactly as written (e.g. "1150", "1300").
       – weight : The WEIGHT exactly as written, usually in KG (e.g. "817", "1374").
 
@@ -179,6 +184,23 @@ function buildWarnings(doc: Grn): string[] {
       );
     }
   }
+
+  // The roll/batch number must be unique per row. Duplicates usually mean the
+  // model grabbed a container id (shared by many rolls) instead of the roll no.
+  const seen = new Set<string>();
+  const dupes = new Set<string>();
+  for (const r of doc.rolls) {
+    const b = (r.batch ?? "").trim();
+    if (!b) continue;
+    if (seen.has(b)) dupes.add(b);
+    seen.add(b);
+  }
+  if (dupes.size > 0) {
+    warnings.push(
+      `${dupes.size} batch number${dupes.size === 1 ? "" : "s"} repeat across rows (e.g. ${Array.from(dupes).slice(0, 3).join(", ")}). The roll/batch number should be unique per roll — please verify these against the PDF.`,
+    );
+  }
+
   return warnings;
 }
 
