@@ -89,7 +89,10 @@ Process one container fully (top row to bottom row) before moving to the next. G
 ────────────────────────
 GENERAL RULES
 ────────────────────────
-• Do NOT skip any roll. Do NOT invent rolls. The number of rolls you output should match officialRolls.
+• This document is LARGE: it usually contains HUNDREDS of rolls (often 500+) across ~24 containers and many pages (up to ~16). You MUST scan EVERY page and EVERY container to the very end.
+• Returning an empty or short "rolls" array is a FAILURE. The number of roll entries you output must be CLOSE TO officialRolls (the header ROLL total, e.g. 536). If you have far fewer, keep going — you have not finished.
+• Work methodically: for each page, take the left container top-to-bottom, then the middle, then the right; then move to the next page. Emit a roll entry for every single row in every container table.
+• Do NOT skip any roll. Do NOT invent rolls. Do NOT stop early.
 • Transcribe digits exactly; never round or "fix" a number.
 • Ignore per-container subtotal/summary lines — only emit actual roll rows.
 • Do not include commentary.`;
@@ -266,7 +269,7 @@ export async function POST(request: Request): Promise<Response> {
             parts: [
               { inlineData: { mimeType: "application/pdf", data: base64 } },
               {
-                text: "Extract every roll from this GRN / container load plan PDF according to the instructions.",
+                text: "Extract EVERY roll from EVERY container on EVERY page of this GRN / container load plan PDF. There are typically several hundred rolls — scan the whole document to the end and do not stop early. The rolls array must not be empty.",
               },
             ],
           },
@@ -277,10 +280,12 @@ export async function POST(request: Request): Promise<Response> {
           responseMimeType: "application/json",
           responseSchema,
           // GRNs can contain hundreds of rolls — raise the output budget so the
-          // JSON isn't truncated. Keep the model's (default) thinking ON: it is
-          // needed to actually read the dense multi-page roll tables. If the
-          // output still truncates, the salvage path below recovers the rolls.
+          // JSON isn't truncated, and force dynamic "thinking" so the model
+          // actually works through the dense multi-page roll tables instead of
+          // returning an empty list. If output still truncates, the salvage path
+          // below recovers the rolls.
           maxOutputTokens: 65536,
+          thinkingConfig: { thinkingBudget: -1 },
         },
       }),
     );
