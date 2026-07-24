@@ -207,10 +207,15 @@ function buildWarnings(doc: Grn): string[] {
 // ── POST ──────────────────────────────────────────────────────
 
 export async function POST(request: Request): Promise<Response> {
-  const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
+  // The GRN tool uses its own key when set (GRN_GEMINI_API_KEY) so its quota is
+  // separate from the order-sheet tool; it falls back to the shared key.
+  const apiKey =
+    process.env.GRN_GEMINI_API_KEY ||
+    process.env.GEMINI_API_KEY ||
+    process.env.GOOGLE_API_KEY;
   if (!apiKey) {
     return jsonError(
-      "Server is missing GEMINI_API_KEY. Set it in .env.local.",
+      "Server is missing an API key. Set GRN_GEMINI_API_KEY (or GEMINI_API_KEY) in the environment.",
       500,
     );
   }
