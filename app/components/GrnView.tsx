@@ -161,6 +161,21 @@ export default function GrnView() {
       const body = new FormData();
       body.append("file", file);
       const res = await fetch("/api/grn", { method: "POST", body });
+
+      // The route always replies with JSON. Anything else (an HTML page) means a
+      // platform-level response — a timeout, cold start, or bad gateway — not a
+      // real extraction result. Give a clear message instead of a JSON error.
+      const ct = res.headers.get("content-type") || "";
+      if (!ct.includes("application/json")) {
+        await res.text().catch(() => "");
+        const message =
+          res.status === 502 || res.status === 503 || res.status === 504
+            ? `The server timed out or was waking up (HTTP ${res.status}). Large GRNs can take a while — wait a few seconds and press Analyze again.`
+            : `The server returned an unexpected response (HTTP ${res.status}). If this persists, the GRN may be too large to process in one request — tell me and I'll split it.`;
+        setStatus({ kind: "error", message });
+        return;
+      }
+
       const data = (await res.json()) as
         | { rolls: GrnRoll[]; warnings?: string[] }
         | { error: string };
