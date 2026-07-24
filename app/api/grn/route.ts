@@ -258,10 +258,11 @@ export async function POST(request: Request): Promise<Response> {
           temperature: 0,
           responseMimeType: "application/json",
           responseSchema,
-          // GRNs can contain hundreds of rolls — give the answer the full output
-          // budget and skip "thinking" tokens so the JSON never gets truncated.
+          // GRNs can contain hundreds of rolls — raise the output budget so the
+          // JSON isn't truncated. Keep the model's (default) thinking ON: it is
+          // needed to actually read the dense multi-page roll tables. If the
+          // output still truncates, the salvage path below recovers the rolls.
           maxOutputTokens: 65536,
-          thinkingConfig: { thinkingBudget: 0 },
         },
       }),
     );
